@@ -23,3 +23,6 @@
 # info files
 !01-info_files/sample_information.csv
 !01-info_files/adapters.fasta
+
+# gitkeep
+!**/.gitkeep
