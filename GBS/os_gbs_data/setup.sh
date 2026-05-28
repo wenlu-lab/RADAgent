@@ -141,6 +141,15 @@ green "agent installed (editable)"
 .venv/bin/python -c "import torch, vllm, transformers, gbs.config; print('  imports OK')"
 green "All Python packages OK"
 
+# .gbs/ holds the agent's transcripts + runtime.log (see agent/gbs/config.py);
+# the next-steps below also redirect vllm/orchestrator logs into it.
+if [ ! -d .gbs ]; then
+    mkdir -p .gbs
+    green "Created .gbs/ (runtime transcripts + logs)"
+else
+    yellow "Reusing existing .gbs/"
+fi
+
 # ---------- 4. model download ----------
 section "4. Pre-download Qwen3-Coder-30B-A3B-Instruct-FP8 (~30 GB)"
 
@@ -178,7 +187,7 @@ Setup is done. Next steps:
 
 4. Run the pipeline:
    nohup ./gbs orchestrator > .gbs/orchestrator-\$(date +%Y%m%d-%H%M%S).log 2>&1 &
-   tail -F gbs-pipeline.log
+   tail -F .gbs/orchestrator-*.log
 
 5. When done:
    ls -la final_snp_panel.vcf
