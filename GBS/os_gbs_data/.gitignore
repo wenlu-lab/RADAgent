@@ -24,6 +24,9 @@
 !01-info_files/sample_information.csv
 !01-info_files/adapters.fasta
 
+# CLI entry point (extensionless bash script)
+!/gbs
+
 # For empty directories
 !**/.gitkeep
 
