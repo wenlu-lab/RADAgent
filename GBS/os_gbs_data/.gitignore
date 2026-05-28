@@ -18,6 +18,7 @@
 !*.yaml
 !*.json
 !*.toml
+!*.pl
 !README*
 
 # info files
