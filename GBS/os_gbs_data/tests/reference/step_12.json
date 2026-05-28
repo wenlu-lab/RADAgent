@@ -1,0 +1,5 @@
+{
+  "maf_vcf_exists": true,
+  "snp_count": 203,
+  "vcf_name": "filtered_m4_p80_x0_S1_chr.singleton.hwe.maf10.LD.no_AT_CG.recode.vcf"
+}

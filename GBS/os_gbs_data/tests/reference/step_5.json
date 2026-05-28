@@ -1,0 +1,7 @@
+{
+  "bai_count": 476,
+  "bam_count": 476,
+  "empty_bams": 0,
+  "min_mapped_pct_in_sample": {"min": 95.0, "max": 100.0},
+  "no_unsorted_leftover": true
+}

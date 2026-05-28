@@ -1,0 +1,5 @@
+{
+  "first_100k_data_lines_at_least": 64653,
+  "header_line_count": 2345,
+  "vcf_exists": true
+}
