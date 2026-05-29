@@ -26,7 +26,13 @@
 #   14 = BLAST mapping
 #   15 = Even distribution (final panel)
 
-cd ~/os_gbs_data || { echo "ERROR: ~/os_gbs_data not found"; exit 1; }
+# Resolve the project root to this script's own directory (like ./gbs),
+# so it always operates on the repo this script lives in, regardless of cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || { echo "ERROR: cannot cd to script directory: $SCRIPT_DIR"; exit 1; }
+echo "=== GBS pipeline cleanup ==="
+echo "Running on: $SCRIPT_DIR"
+echo ""
 
 clean_step0() {
   echo "Cleaning Step 0 (lane_info.txt)..."
@@ -199,7 +205,7 @@ else
 fi
 
 echo ""
-echo "=== Remaining files ==="
+echo "=== Remaining files in $SCRIPT_DIR ==="
 echo "02-raw originals:  $(ls 02-raw/*.fastq.gz 2>/dev/null | wc -l) files"
 echo "Scripts (00-scripts): $(ls 00-scripts/*.sh 00-scripts/*.py 00-scripts/*.R 00-scripts/utility_scripts/*.sh 2>/dev/null | wc -l) files"
 echo "Skill-created tools: $(ls AT_CG.py count_snp_indel.py snpFormat.pl map_new.pl extract_flanking.py even_distribute_snps.py filter_hwe_by_pop.pl 2>/dev/null | wc -l) files"
