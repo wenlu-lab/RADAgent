@@ -70,6 +70,17 @@ def cmd_status(args, cfg: Config) -> int:
     return 0
 
 
+def cmd_view(args, cfg: Config) -> int:
+    """./gbs view [session_id] [--no-live] — browse pipeline runs in a live TUI."""
+    from gbs.viewer.app import GBSViewer
+    gbs_dir = cfg.transcripts_dir.parent  # the .gbs/ directory
+    if not (gbs_dir / "transcripts").is_dir():
+        sys.exit(f"No transcripts found under {gbs_dir}/transcripts.")
+    app = GBSViewer(gbs_dir, live=not args.no_live, session_id=args.session)
+    app.run()
+    return 0
+
+
 def cmd_serve(args, cfg: Config) -> int:
     if _vllm_alive(cfg.vllm_base_url):
         print(f"vLLM already responding at {cfg.vllm_base_url}")
@@ -223,6 +234,12 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("status").set_defaults(func=cmd_status)
     sub.add_parser("serve").set_defaults(func=cmd_serve)
+
+    p_view = sub.add_parser("view", help="Browse pipeline runs in a live TUI")
+    p_view.add_argument("session", nargs="?", default=None,
+                        help="Session id (prefix) to open; default: live or most-recent run")
+    p_view.add_argument("--no-live", action="store_true", help="Disable live auto-refresh")
+    p_view.set_defaults(func=cmd_view)
 
     p_run = sub.add_parser("run", help="Run any skill standalone")
     p_run.add_argument("skill")
