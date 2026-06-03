@@ -1,388 +1,450 @@
-# GBS Pipeline — AI-Automated Genotyping-by-Sequencing
+# GBS Pipeline — Self-Hosted Agentic Genotyping-by-Sequencing
 
-An end-to-end GBS (Genotyping-by-Sequencing) bioinformatics pipeline automated through [Claude Code](https://claude.ai/claude-code) skills. The pipeline takes raw paired-end Illumina FASTQ files and produces a final SNP panel VCF with markers evenly distributed across all chromosomes — ready for genotyping array design.
+An end-to-end GBS (Genotyping-by-Sequencing) bioinformatics pipeline that takes raw
+paired-end Illumina FASTQ files and produces a final SNP panel VCF with markers evenly
+distributed across all chromosomes — ready for genotyping-array design.
 
-The entire pipeline (16 steps) runs autonomously via a single command, with 4 layers of built-in error handling.
-
-## Pipeline Overview
-
-```
-Raw FASTQs ──> Trim ──> Enzyme Filter ──> Align ──> Genotype ──> Filter ──> SNP Panel
-  (952 files)   Step 1    Step 2          Step 5    Step 6-7     Steps 8-15   Final VCF
-```
-
-**Input**: Paired-end FASTQ files + reference genome + sample metadata CSV
-**Output**: `final_snp_panel.vcf` — quality-filtered, LD-pruned, BLAST-validated SNP panel
-
-## Directory Structure
+The 16 steps run **autonomously from a single command**, driven by a small Python agent
+runtime (`agent/`) that talks to a **self-hosted Qwen3-Coder model on vLLM** — no
+commercial LLM API required. Each step is executed by an LLM "subagent" that follows a
+detailed `SKILL.md` spec, with **4 layers of built-in error handling**.
 
 ```
-gbs_data/
-├── .claude/skills/           # 18 Claude Code skill modules (the automation engine)
-├── 00-scripts/               # Bash, Python, R, and Perl processing scripts
-│   └── utility_scripts/      # Helper scripts
-├── 01-info_files/            # Configuration and metadata
-│   ├── adapters.fasta        # Illumina adapter sequences (included)
-│   └── sample_information.csv  # ** YOU PROVIDE THIS **
-├── 02-raw/                   # ** YOUR RAW FASTQ FILES GO HERE **
-├── 04-all_samples/           # Generated: renamed samples + BAM alignments
-├── 05-stacks/                # Generated: genotyping catalogs + VCFs
-├── 08-genome/                # ** YOUR REFERENCE GENOME GOES HERE **
-├── 10-log_files/             # Generated: timestamped execution logs
-├── clean_pipeline.sh         # Utility to remove pipeline outputs by step
-└── filter_hwe_by_pop.pl      # Hardy-Weinberg equilibrium filter (Perl)
+Raw FASTQs ─▶ Trim ─▶ Enzyme Filter ─▶ Align ─▶ Genotype ─▶ Filter ─▶ SNP Panel
+ (paired-end)  Step 1     Step 2        Step 5    Step 6-7   Steps 8-15  final_snp_panel.vcf
 ```
 
-Directories marked **generated** are populated by the pipeline. The `03-samples/` directory is created automatically during Step 2.
+- **Input:** paired-end FASTQ files + reference genome + sample-information CSV
+- **Output:** `final_snp_panel.vcf` — quality-filtered, LD-pruned, BLAST-validated SNPs
 
-## Prerequisites
+> This README supersedes the old `SETUP.md` and `00-scripts/browse_transcripts.py`
+> documentation. Everything you need is here.
 
-### Claude Code
+---
 
-Install [Claude Code](https://claude.ai/claude-code) (CLI, desktop app, or IDE extension). The skills in `.claude/skills/` are what drive the automation.
+## Current stack
 
-### System Tools
+This repo runs the pipeline on a **self-hosted** LLM. The concrete setup it's built and
+tested against:
 
-The following must be installed and available on `$PATH`:
+| Component | Value |
+|---|---|
+| Model | `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` (served as `qwen3-coder`) |
+| Inference server | vLLM `0.10.1` (first release with the `qwen3_coder` tool parser) |
+| Python | 3.11, in a project-local `.venv/` |
+| Pinned deps | `torch==2.7.1` (cu118 wheels), `transformers==4.55.4` |
+| Runtime | the `gbs-agent` package in `agent/`, invoked via the `./gbs` CLI |
+| GPU | 1× NVIDIA A100 80GB / H100 80GB (≥75 GB VRAM) |
 
-| Tool | Used By | Purpose |
-|------|---------|---------|
-| `cutadapt` | Step 1 | Adapter trimming |
-| `process_radtags` | Step 2 | Restriction enzyme filtering (Stacks) |
-| `bwa` | Step 5 | Sequence alignment |
-| `samtools` | Step 5 | BAM sorting and indexing |
-| `gstacks` | Step 6 | Reference-based genotyping (Stacks) |
-| `populations` | Step 7 | Population-level SNP export (Stacks) |
-| `vcftools` | Steps 8-12 | VCF filtering and manipulation |
-| `bcftools` | Step 8 | VCF format conversion |
-| `plink` | Steps 8, 10 | PLINK format operations |
-| `blastn`, `makeblastdb` | Step 14 | SNP uniqueness validation |
-| `parallel` | Steps 1, 2, 5 | GNU parallel for multi-core execution |
-| `perl` | Steps 3, 9 | Script execution |
-| `python3` | Steps 8-15 | Python 3 processing scripts |
-| `Rscript` | Step 10 | R with `bigsnpr` package (LD clumping) |
+The bioinformatics scripts in `00-scripts/` are plain Bash/Python/R/Perl and are **not**
+LLM-specific. The skills in `.claude/skills/` were originally authored for Claude Code;
+the `agent/` runtime reads those same `SKILL.md` files and drives them with the local
+model. See `agent/README.md` for a deeper architecture write-up.
 
-### R Package
+### How the agent runtime works
 
-```r
-install.packages("bigsnpr")
+```
+./gbs orchestrator
+   │
+   ▼
+[orchestrator: a Python process talking to vLLM]
+   │   • runs Bash pre-flight + on-disk cross-checks
+   │   • writes timing/status to gbs-pipeline.log
+   │   • decides retries / invokes the debugger
+   │
+   └── Skill("gbs-5-bwa") ── spawns a fresh subprocess ─▶ [step subagent, isolated context]
+                                                                │  Bash / Read / Grep / Glob
+                                                                ▼
+                                                           bwa mem … | samtools …
 ```
 
-## Open-source pipeline (vLLM + Qwen3-Coder)
+Every orchestrator and subagent conversation is recorded as JSONL under `.gbs/` — which
+is exactly what the **`./gbs view`** TUI reads (see [Viewing runs](#viewing-runs-gbs-view)).
 
-This project supports two execution paths for the agentic layer:
+---
 
-1. **Claude Code** (original, hosted Anthropic models) — see the rest of this README.
-2. **Self-hosted Qwen3-Coder via vLLM** (no commercial API needed) — described below.
+## Quick start
 
-Both paths read the same `.claude/skills/SKILL.md` files; the only difference is which LLM drives them.
-
-### One-time setup
+Assuming the system tools and model are already installed (see [Installation](#installation)):
 
 ```bash
-# 1. Create a project-local venv (do NOT use a global pip install — torch
-#    and CUDA-runtime wheels need to match your driver version)
-python3.11 -m venv .venv
+./gbs serve            # start vLLM (leave running; ~60-90s to load the model)
+./gbs status           # sanity check — expect "vLLM alive: True"
 
-# 2. Install torch matching your driver. For NVIDIA driver 545+ (CUDA 12.3
-#    runtime max), use the cu118 wheels — they are forward-compatible with
-#    any CUDA 11.8+ driver. For driver 550+ you can use cu124/cu126 instead.
+# run the full pipeline in the background, logging to .gbs/ (gives the viewer a session log)
+nohup ./gbs orchestrator > .gbs/orchestrator-$(date +%Y%m%d-%H%M%S).log 2>&1 &
+
+./gbs view             # watch it live in the TUI
+```
+
+---
+
+## Installation
+
+Fresh-server setup is ~45–60 min, dominated by the model download.
+
+### 1. Hardware check
+
+```bash
+nvidia-smi                      # need ≥75 GB VRAM total (A100 80GB / H100 80GB)
+df -h ~                         # need ≥50 GB free disk for the model cache
+free -h                         # need ≥32 GB RAM
+nvidia-smi | grep "Driver Ver"  # need a driver supporting CUDA 11.8+ (driver ≥ 470)
+```
+
+If the card has < 75 GB VRAM, the FP8 30B model won't fit — use a smaller variant or
+multi-GPU (not covered here).
+
+### 2. System + bioinformatics tools
+
+`setup.sh` does **not** install these (they need `sudo` and are OS-specific). On Ubuntu/Debian:
+
+```bash
+sudo apt update
+sudo apt install -y \
+    python3.11 python3.11-venv python3-pip \
+    bwa samtools bcftools vcftools \
+    ncbi-blast+ cutadapt parallel perl r-base git curl
+```
+
+**Stacks 2.x** (`process_radtags`, `gstacks`, `populations`) — apt ships v1, you need v2:
+
+```bash
+conda install -c bioconda stacks=2.66
+```
+
+**plink2:** `conda install -c bioconda plink2` (or download from
+<https://www.cog-genomics.org/plink/2.0/>).
+
+**R package `bigsnpr`** (step 10):
+
+```bash
+sudo R -e 'install.packages("bigsnpr", repos="https://cloud.r-project.org")'
+```
+
+Verify everything is on `$PATH`:
+
+```bash
+for tool in bwa samtools bcftools vcftools blastn makeblastdb cutadapt parallel \
+            process_radtags gstacks populations plink2 Rscript perl python3.11; do
+  command -v "$tool" >/dev/null && echo "OK   $tool" || echo "MISS $tool"
+done
+```
+
+Resolve any `MISS` before continuing.
+
+### 3. Python venv + model (automated)
+
+```bash
+git clone <your-repo-url> os_gbs_data
+cd os_gbs_data
+bash setup.sh
+```
+
+`setup.sh` is idempotent and will: verify hardware/driver/Python, warn about any missing
+bioinformatics tools, create `.venv/` with the pinned `torch`/`vLLM`/`transformers` and
+install the agent (`pip install -e ./agent`), then pre-download the ~30 GB model.
+
+<details>
+<summary>Manual Python install (if you'd rather not use setup.sh)</summary>
+
+```bash
+python3.11 -m venv .venv
 .venv/bin/pip install --upgrade pip
+# torch — cu118 wheels are forward-compatible with any driver ≥ 470:
 .venv/bin/pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
     --index-url https://download.pytorch.org/whl/cu118
-
-# 3. Install vLLM 0.10.1 (first version with the qwen3_coder tool parser)
-#    and pin transformers — vLLM 0.10.1 declares transformers>=4.55 with no
-#    upper bound, but the 5.x line removes Qwen2Tokenizer APIs vLLM uses.
 .venv/bin/pip install vllm==0.10.1
-.venv/bin/pip install "transformers==4.55.4"
-
-# 4. Install the agent in editable mode
+.venv/bin/pip install "transformers==4.55.4"   # 5.x removes APIs vLLM 0.10.1 uses
 .venv/bin/pip install -e ./agent
-
-# 5. Pre-download the model (~32 GB)
 .venv/bin/huggingface-cli download Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
-
-# 6. Start vLLM (leave running in tmux, or install systemd unit from infra/)
-./gbs serve
-
-# 7. Sanity check
-./gbs status
 ```
+</details>
 
-The `./gbs` wrapper and `infra/vllm_serve.sh` both invoke the venv binaries
-directly, so you do not need to `source .venv/bin/activate`.
+The `./gbs` wrapper and `infra/vllm_serve.sh` call the venv binaries directly — you never
+need to `source .venv/bin/activate`.
 
-### Running the pipeline
-
-```bash
-# Full pipeline
-./gbs orchestrator
-
-# Resume from step 5
-./gbs orchestrator 5
-
-# Clean and run only step 8
-./gbs orchestrator 8 --only --clean
-
-# Run any single skill standalone
-./gbs run gbs-5-bwa
-
-# Manual debugger invocation
-./gbs debugger 9 "vcftools error"
-
-# Browse transcripts (works against the new .gbs/transcripts/ location)
-python3 00-scripts/browse_transcripts.py list
-python3 00-scripts/browse_transcripts.py show 5 --commands
-```
-
-### Hardware requirements (open-source path)
-
-- 1× NVIDIA A100 80GB (or equivalent ~80GB VRAM card)
-- 32GB+ system RAM
-- ~50GB free disk for the model cache
-
-### Validation
-
-```bash
-# Per-step parity tests against existing reference outputs
-pytest tests/test_step_parity.py
-
-# Full end-to-end run + validation (~4h)
-pytest tests/test_e2e.py
-```
-
-See `docs/superpowers/specs/2026-05-01-os-gbs-port-design.md` for the design rationale.
-
-## Setup
-
-### 1. Clone or copy this repository
-
-```bash
-cp -r gbs_data/ /your/workspace/gbs_data/
-cd /your/workspace/gbs_data/
-```
-
-### 2. Add your raw FASTQ files
-
-Place paired-end FASTQ files in `02-raw/`. File naming convention:
+### 4. Add your data
 
 ```
-02-raw/
-├── SRR30282941_1.fastq.gz    # Forward reads (read 1)
-├── SRR30282941_2.fastq.gz    # Reverse reads (read 2)
-├── SRR30282940_1.fastq.gz
-├── SRR30282940_2.fastq.gz
+02-raw/                        # ** your raw paired-end FASTQs **
+├── SAMPLE001_1.fastq.gz       #    forward reads (_1)
+├── SAMPLE001_2.fastq.gz       #    reverse reads (_2)
 └── ...
+08-genome/genome.fasta         # ** your reference genome **
+01-info_files/
+├── sample_information.csv      # ** you provide — sample/population map (see below) **
+└── adapters.fasta             #    cutadapt adapters (default shipped; replace if needed)
 ```
 
-The `_1` / `_2` suffix before `.fastq.gz` distinguishes forward and reverse reads.
+BWA and BLAST indexes for the genome are built automatically by the pipeline if missing
+(or build them once yourself: `bwa index 08-genome/genome.fasta` and
+`makeblastdb -dbtype nucl -in 08-genome/genome.fasta -input_type fasta -title genome.fasta`).
 
-### 3. Add your reference genome
-
-```
-08-genome/
-└── genome.fasta              # Reference genome (FASTA format)
-```
-
-BWA and BLAST indexes are built automatically by the pipeline if they don't exist.
-
-### 4. Prepare your sample information CSV
-
-Edit `01-info_files/sample_information.csv`. This file maps sequencing lanes to samples and populations:
+**`sample_information.csv` format** — one row per sample:
 
 ```csv
 #Lane,Barcode,Population,Sample,PopulationID,PlatePosition,,
 SRR30282941,TGACACC,P01,ROW-04-22,1,A01,,Notes
 SRR30282940,CTCACT,P01,ROW-05-22,1,A02,,DO NOT modify the column titles in the header line
-SRR30282944,CTCCTTA,P01,ROW-03-22,1,A03,,DO NOT modify the order of the first six columns
 ```
 
-**Rules**:
-- Do NOT modify the column titles in the header line
-- Do NOT modify the order of the first six columns
-- Do NOT modify the plate position format (use `A01`, not `A1`)
-- Lane names must match your FASTQ file prefixes (without `_1.fastq.gz`)
+- Don't modify the header titles or the order of the first six columns.
+- Use plate-position format `A01`, not `A1`.
+- Lane names must match your FASTQ prefixes (without `_1.fastq.gz`).
 
-### 5. Configure for your organism
-
-The pipeline is configured for a crayfish genome with **sbfI** restriction enzyme and 94 chromosomes (NC_091150.1 through NC_091243.1). If your organism differs, you'll need to update:
-
-- **Enzyme**: Edit the `process_radtags` command in `00-scripts/02_process_radtags_1_enzyme_parallel_pe.sh` and the Step 2 skill
-- **Chromosome names**: Update the chromosome filtering in Step 8's skill (`.claude/skills/gbs-8-vcf-filter/SKILL.md`)
-- **Chromosome count**: Update Step 15's even distribution logic if your genome has a different number of chromosomes
-
-## Usage
-
-Open Claude Code in the `gbs_data/` directory and use slash commands:
-
-### Run the full pipeline
-
-```
-/gbs-orchestrator
-```
-
-Runs all 16 steps (0 through 15) sequentially. Estimated total time: ~3-4 hours depending on sample count and hardware.
-
-### Resume from a specific step
-
-```
-/gbs-orchestrator 5
-```
-
-Resumes from step 5 through 15 (assumes prior steps completed successfully).
-
-### Clean and restart
-
-```
-/gbs-orchestrator 0 --clean
-```
-
-Removes all outputs from step 0 onward, then reruns the full pipeline.
-
-### Run a single step
-
-```
-/gbs-orchestrator 8 --only
-```
-
-Runs only step 8. Useful for debugging or re-running individual steps.
-
-### Run individual steps directly
-
-Each step can also be invoked as a standalone skill:
-
-```
-/gbs-0-lane-info
-/gbs-1-cutadapt
-/gbs-5-bwa
-/gbs-10-ld-clump
-...
-```
-
-### Clean pipeline outputs
+### 5. Start vLLM and sanity-check
 
 ```bash
-./clean_pipeline.sh           # Clean all outputs (steps 0-15)
-./clean_pipeline.sh 5         # Clean only step 5
-./clean_pipeline.sh 5-10      # Clean steps 5 through 10
-./clean_pipeline.sh indexes   # Clean BWA + BLAST indexes (expensive to rebuild)
+./gbs serve     # or: tmux new -d -s vllm 'bash infra/vllm_serve.sh 2>&1 | tee .gbs/vllm.log'
+./gbs status
 ```
 
-## Pipeline Steps
+Expected `./gbs status`:
 
-| Step | Skill | Description | Est. Time |
+```
+Project root: /path/to/os_gbs_data
+Skills dir:   /path/to/os_gbs_data/.claude/skills
+vLLM URL:     http://127.0.0.1:8000/v1
+vLLM alive:   True
+Model name:   qwen3-coder
+GPU free MB:  4724      ← normal: vLLM has already reserved its KV-cache budget
+```
+
+If `vLLM alive: False`, the server is still loading — wait 60–90 s and retry.
+
+---
+
+## Running the pipeline
+
+```bash
+# Full pipeline (16 steps), in the background, logging to .gbs/ so the viewer sees the run:
+nohup ./gbs orchestrator > .gbs/orchestrator-$(date +%Y%m%d-%H%M%S).log 2>&1 &
+echo "PID: $!"
+```
+
+**Monitor** (in another terminal) — the richest option is the TUI (`./gbs view`); for a
+plain tail:
+
+```bash
+tail -F gbs-pipeline.log        # real per-step log with timestamps + status
+pgrep -af gbs-agent             # confirm the agent process is alive
+```
+
+**When it finishes:**
+
+```bash
+grep -cv '^#' final_snp_panel.vcf    # SNP count (typical: 100–300)
+head final_snp_panel_summary.txt     # per-chromosome summary
+cat gbs-pipeline-timing.csv          # per-step duration + token usage
+```
+
+---
+
+## Viewing runs (`./gbs view`)
+
+A live, keyboard-driven terminal UI for browsing pipeline runs recorded under `.gbs/` —
+both **while a run is in progress** and **after it finishes**. It replaces the old
+`browse_transcripts.py` script.
+
+```bash
+./gbs view                 # open the live run if one is active, else the most recent
+./gbs view e24cd335        # open a specific run by session-id prefix
+./gbs view --no-live       # static mode (no background polling)
+```
+
+### Layout — three panes + a status bar
+
+```
+┌ RUNS ─────────┬ STEPS ───────────────────────┬ DETAIL ─────────────┐
+│ ✓ 05-30 12:53 │ ✓  5 BWA Alignment   1h15m #2 │ Step 5: BWA …       │
+│ ✗ 05-30 09:19 │ ✗  5 BWA Alignment   48m   #1 │ FAILED · 48m · 3.2M │
+│   ● ← live     │ ·· Orchestrator              │ $ bwa mem …         │
+└───────────────┴──────────────────────────────┴─────────────────────┘
+ [c] commands-only: OFF   [e] errors-only: OFF   [l] live-follow: ON   [/] search: off
+```
+
+- **RUNS** — one line per pipeline run. Glyph = run status (`✓` complete, `✗` stopped,
+  `⟳` running, `·` unknown); a trailing **`●`** = the run is live.
+- **STEPS** — steps of the selected run. Glyph = step status, then step number
+  (`··` = the Orchestrator/Debugger lane), title, duration, and `#N` = attempt number
+  for retried steps.
+- **DETAIL** — the selected step's activity: header + meta line
+  (`STATUS · duration · tokens · errors`), then events in order — agent narration, each
+  `$ command`, and its output **verbatim** (errors shown in red, e.g. `[exit 1]`).
+- **Status bar** (under the header) — always shows which toggles are ON/OFF and the
+  active search term, updating the instant you press a key.
+
+### Keys
+
+| Key | Action |
+|---|---|
+| `↑` `↓` | Move within the focused list (the view updates as you move) |
+| `Tab` / `Shift+Tab` | Switch focus between the Runs / Steps / Detail panes |
+| `c` | **Commands-only** — show just the `$ command` lines |
+| `e` | **Errors-only** — show only commands/results that failed (`[exit N]`, timeouts) |
+| `/` | **Search** within the detail pane (Enter applies, `Esc` clears) |
+| `o` | Jump to the **Orchestrator lane** — what the controller did to launch/verify/retry steps |
+| `l` | Toggle **live-follow** (auto-refresh + tail the active step) |
+| `r` | Refresh from disk now |
+| `q` | Quit |
+
+`c` and `e` are mutually exclusive (turning one on turns the other off — the status bar
+shows it). Moving the cursor manually turns live-follow off so a refresh won't yank you
+away; press `l` to re-engage.
+
+### What's recorded under `.gbs/`
+
+```
+.gbs/
+├── orchestrator-<YYYYMMDD-HHMMSS>.log   # one per run: "Session: <id>" + final status table
+└── transcripts/<session_id>/
+    ├── gbs-orchestrator.jsonl           # the orchestrator's transcript
+    └── subagents/agent-<id>.jsonl       # one per step / debugger invocation
+```
+
+One session directory = one `./gbs orchestrator` run. Retried steps appear as repeated
+attempts; a debugger invocation appears as its own entry.
+
+---
+
+## Pipeline steps
+
+| Step | Skill | Description | Est. time |
 |------|-------|-------------|-----------|
-| 0 | `gbs-0-lane-info` | Parse FASTQs to generate lane info list | 5s |
-| 1 | `gbs-1-cutadapt` | Trim Illumina adapters (parallel) | 10min |
-| 2 | `gbs-2-radtags` | Enzyme filtering with `process_radtags` (parallel) | 30min |
+| 0 | `gbs-0-lane-info` | Parse FASTQs to generate the lane-info list | 5s |
+| 1 | `gbs-1-cutadapt` | Trim Illumina adapters (parallel) | ~10min |
+| 2 | `gbs-2-radtags` | Enzyme filtering with `process_radtags` (parallel) | ~30min |
 | 3 | `gbs-3-rename` | Rename per-lane outputs to per-sample names | 10s |
-| 4 | `gbs-4-popmap` | Generate population map from sample CSV | 1s |
-| 5 | `gbs-5-bwa` | Align to reference genome with BWA mem (parallel) | 1-2hr |
-| 6 | `gbs-6-gstacks` | Reference-based genotyping | 30-60min |
-| 7 | `gbs-7-populations` | Population-level filtering and export | 10-30min |
-| 8 | `gbs-8-vcf-filter` | VCF filtering + chromosome selection | 1min |
-| 9 | `gbs-9-snp-dup-hwe` | SNP duplication detection + HWE filtering | 2min |
-| 10 | `gbs-10-ld-clump` | Linkage disequilibrium pruning (r^2 >= 0.2) | 5min |
+| 4 | `gbs-4-popmap` | Generate the population map from the sample CSV | 1s |
+| 5 | `gbs-5-bwa` | Align to the reference with BWA-MEM (parallel) | ~1-2hr |
+| 6 | `gbs-6-gstacks` | Reference-based genotyping | ~30-60min |
+| 7 | `gbs-7-populations` | Population-level filtering and export | ~10-30min |
+| 8 | `gbs-8-vcf-filter` | VCF filtering + chromosome selection | ~1min |
+| 9 | `gbs-9-snp-dup-hwe` | SNP duplication detection + HWE filtering | ~2min |
+| 10 | `gbs-10-ld-clump` | Linkage-disequilibrium pruning (`bigsnpr`) | ~5min |
 | 11 | `gbs-11-remove-atgc` | Remove strand-ambiguous A/T and G/C SNPs | 5s |
-| 12 | `gbs-12-maf-filter` | Minor allele frequency filter (MAF >= 0.1) | 5s |
+| 12 | `gbs-12-maf-filter` | Minor-allele-frequency filter (MAF ≥ 0.1) | 5s |
 | 13 | `gbs-13-flanking` | Remove SNPs in complex/duplicated regions | 10s |
-| 14 | `gbs-14-blast-map` | BLAST validation of SNP uniqueness in genome | 2min |
-| 15 | `gbs-15-even-dist` | Select final panel with even chromosome coverage | 5s |
+| 14 | `gbs-14-blast-map` | BLAST validation of SNP uniqueness | ~2min |
+| 15 | `gbs-15-even-dist` | Select the final panel with even chromosome coverage | 5s |
 
-## Error Handling
+---
 
-The pipeline implements 4 layers of error defense:
-
-1. **Step self-heal**: Each step runs pre-flight checks and auto-fixes common issues (missing directories, permissions, stale files)
-2. **Step retry**: After self-healing, each step retries its execution once internally
-3. **Orchestrator retry**: If a step fails, the orchestrator retries the entire step once
-4. **Autonomous debugger**: If all else fails, the `gbs-debugger` skill performs deep root-cause analysis, reads the failed step's specification, applies a targeted fix, and validates before resuming
-
-## Output
-
-The final deliverable is `final_snp_panel.vcf` — a VCF file containing quality-filtered SNPs distributed across all chromosomes. Companion files:
-
-- `final_snp_panel_summary.txt` — per-chromosome breakdown (chromosome, length, SNP count, sources)
-- `snp_distribution.txt` — tab-delimited SNP positions for visualization
-- `gbs-pipeline.log` — execution timeline with timestamps
-- `gbs-pipeline-timing.csv` — detailed per-step timing metrics
-
-## Browsing Step Transcripts
-
-Every skill execution is recorded as a full conversation transcript (JSONL) by Claude Code. Use `00-scripts/browse_transcripts.py` to browse these:
+## `./gbs` command reference
 
 ```bash
-# List all sessions that have transcripts
-python3 00-scripts/browse_transcripts.py sessions
-
-# List all steps from the latest pipeline run (with attempt count, size, timing)
-python3 00-scripts/browse_transcripts.py list
-
-# Show the full conversation for a step (all attempts if retried)
-python3 00-scripts/browse_transcripts.py show 5
-
-# If you ran the pipeline multiple times in one session, select a specific run
-python3 00-scripts/browse_transcripts.py list --run 1
-python3 00-scripts/browse_transcripts.py show 5 --run 1
-
-# Show only a specific attempt
-python3 00-scripts/browse_transcripts.py show 5 --attempt 1
-
-# Show only the bash commands that were run
-python3 00-scripts/browse_transcripts.py show 5 --commands
-
-# Show only errors and failures
-python3 00-scripts/browse_transcripts.py show 5 --errors
-
-# Show a condensed summary (tool counts, commands, API crash status)
-python3 00-scripts/browse_transcripts.py show 5 --summary
-
-# Get the raw .jsonl file path (for piping to jq, less, etc.)
-python3 00-scripts/browse_transcripts.py path 5
+./gbs status                      # environment + vLLM health + recent sessions
+./gbs serve                       # start the vLLM server
+./gbs view [session] [--no-live]  # browse runs in the TUI
+./gbs orchestrator                # run the full pipeline (steps 0-15)
+./gbs orchestrator 5              # resume from step 5
+./gbs orchestrator 8 --only       # run only step 8
+./gbs orchestrator 8 --only --clean   # clean step 8 outputs first, then run it
+./gbs run gbs-5-bwa               # run one skill standalone (no orchestrator)
+./gbs debugger 9 "vcftools error" # manually invoke the autonomous debugger on a step
 ```
 
-The transcripts are stored by Claude Code at `~/.claude/projects/<project-hash>/<session-id>/subagents/`. Each `.jsonl` file contains every tool call, bash command, reasoning step, and output from a single skill invocation — useful for auditing exactly what happened during a pipeline run, diagnosing failures, or understanding retry behavior.
+**Cleaning outputs:**
 
-## Autonomous Debugger
-
-The `gbs-debugger` skill (`.claude/skills/gbs-debugger/SKILL.md`) is the 4th layer of error defense. When a step fails after self-heal + step retry + orchestrator retry, the orchestrator escalates to the debugger automatically.
-
-The debugger has **zero hardcoded knowledge** of any step. It works by:
-
-1. Reading the failed step's `SKILL.md` to understand what the step does and what it expects
-2. Investigating the actual system state (logs, output files, disk space, processes)
-3. Diagnosing the root cause and categorizing the error
-4. Applying a targeted fix
-5. Validating the fix before reporting back
-
-It can also be invoked manually:
-
-```
-/gbs-debugger 5                          # Debug step 5
-/gbs-debugger 8 "vcftools returned exit code 1"   # Debug with error context
+```bash
+bash clean_pipeline.sh all        # wipe ALL pipeline outputs (keeps raw data)
+bash clean_pipeline.sh 5          # clean only step 5
+bash clean_pipeline.sh 5-10       # clean steps 5 through 10
+bash clean_pipeline.sh indexes    # clean BWA + BLAST indexes (expensive to rebuild)
 ```
 
-The debugger runs on Opus and has access to Bash, Read, Grep, Glob, and Write tools.
+---
 
-## Skill Architecture
+## Error handling (4 layers)
 
-All automation lives in `.claude/skills/` as SKILL.md files. Each skill is a detailed specification that tells Claude Code:
+1. **Step self-heal** — each step runs pre-flight checks and auto-fixes common issues
+   (missing directories, permissions, stale files).
+2. **Step retry** — after self-healing, the step retries its execution once internally.
+3. **Orchestrator retry** — if a step still fails, the orchestrator retries the whole step.
+4. **Autonomous debugger** — if all else fails, `gbs-debugger` reads the failed step's
+   `SKILL.md`, investigates the actual system state, diagnoses the root cause, applies a
+   targeted fix, validates it, and resumes. It has **zero hardcoded per-step knowledge**.
 
-- What pre-flight checks to run before execution
-- The exact commands and scripts to execute
-- How to verify success (expected output counts, file sizes, content checks)
-- How to diagnose and self-heal common failures
+In the TUI, retries and debugger runs are visible directly: a retried step shows
+`#1` (✗) then `#2` (✓), and the debugger appears as its own entry — press `o`/scroll to
+see the orchestrator's decisions.
 
-The skills use the project's existing bash/python/R/perl scripts in `00-scripts/` — they orchestrate, they don't replace the underlying bioinformatics tools.
+---
 
-## Adapting for Your Project
+## Outputs
 
-To use this pipeline with different data:
+| File | Contents |
+|---|---|
+| `final_snp_panel.vcf` | The deliverable — quality-filtered SNPs across all chromosomes |
+| `final_snp_panel_summary.txt` | Per-chromosome breakdown (length, SNP count, sources) |
+| `snp_distribution.txt` | Tab-delimited SNP positions for visualization |
+| `gbs-pipeline.log` | Execution timeline with real timestamps + per-step status |
+| `gbs-pipeline-timing.csv` | Per-step duration + token usage (latest run) |
+| `gbs-pipeline-token-report.txt` | Markdown token/timing report (latest run) |
 
-1. Replace FASTQs in `02-raw/` and genome in `08-genome/`
-2. Update `01-info_files/sample_information.csv` for your samples
-3. Modify enzyme/chromosome parameters in skills if your organism differs (see Setup step 5)
-4. Run `/gbs-orchestrator`
+---
 
-The skill files in `.claude/skills/` contain hardcoded expected values calibrated to the original crayfish dataset (476 samples, 94 chromosomes). When adapting to a new dataset, the pipeline dynamically detects sample counts and chromosome names from your actual data — but review the skills if you encounter validation errors.
+## Adapting for your organism
+
+The shipped configuration targets a crayfish genome with the **sbfI** restriction enzyme
+and 94 chromosomes (`NC_091150.1`–`NC_091243.1`). For a different organism, update:
+
+- **Enzyme** — `00-scripts/02_process_radtags_1_enzyme_parallel_pe.sh` and the Step 2 skill.
+- **Chromosome names** — the chromosome filter in `.claude/skills/gbs-8-vcf-filter/SKILL.md`.
+- **Chromosome count** — Step 15's even-distribution logic.
+
+The pipeline detects sample counts and chromosome names from your actual data at run time;
+review the per-step skills under `.claude/skills/` if you hit validation errors (they
+carry expected values calibrated to the original dataset).
+
+---
+
+## Validation (optional)
+
+The pipeline runtime has parity/e2e tests for *bioinformatics correctness* (these run the
+real tools; they are not viewer tests):
+
+```bash
+pytest tests/test_step_parity.py   # per-step outputs vs tests/reference/step_N.json
+pytest tests/test_e2e.py           # full clean run + validate final_snp_panel.vcf (~4h)
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `vLLM alive: False` after `./gbs serve` | Model still loading | Wait 60–90 s, retry `./gbs status` |
+| `RuntimeError: NVIDIA driver too old` | torch built for newer CUDA than the driver | Use the cu118 torch wheels (Installation §3); don't bare `pip install vllm` (pulls cu130 torch) |
+| `ValueError: type fp8e4nv not supported` | A100/Ampere has no hardware FP8 | `infra/vllm_serve.sh` already drops `--kv-cache-dtype fp8` — don't re-add it |
+| `AttributeError: Qwen2Tokenizer has no attribute all_special_tokens_extended` | transformers 5.x installed | `.venv/bin/pip install "transformers==4.55.4"` |
+| `ConnectError: Connection refused` mid-run | vLLM crashed | Check `tail .gbs/vllm.log`; restart `./gbs serve` |
+| A step reports FAILURE but output files exist | The model judged its own work poorly | Check the files; resume with `./gbs orchestrator <next-step>` |
+| Log shows fake timestamps like "2023-05-15…" | Model copied a SKILL.md template literally | The real timestamps are in `gbs-pipeline.log` / the `.gbs` transcripts |
+
+---
+
+## Repository layout
+
+```
+os_gbs_data/
+├── .claude/skills/      # 18 SKILL.md modules — the per-step specs the agent follows
+├── agent/               # gbs-agent: the Python runtime + ./gbs CLI (see agent/README.md)
+│   └── gbs/viewer/      #   the ./gbs view TUI (model.py = parser, app.py = Textual UI)
+├── 00-scripts/          # Bash/Python/R/Perl bioinformatics scripts (LLM-agnostic)
+├── 01-info_files/       # adapters.fasta + your sample_information.csv
+├── 02-raw/              # ** your raw FASTQs **
+├── 04-all_samples/      # generated: renamed samples + BAM alignments
+├── 05-stacks/           # generated: genotyping catalogs + VCFs
+├── 08-genome/           # ** your reference genome **
+├── 10-log_files/        # generated: timestamped execution logs
+├── .gbs/                # generated: run logs + JSONL transcripts (what ./gbs view reads)
+├── infra/               # vllm_serve.sh + systemd units
+├── tests/               # pipeline parity/e2e tests
+├── docs/superpowers/    # design specs + implementation plans
+├── setup.sh             # one-shot venv + model installer
+├── clean_pipeline.sh    # remove pipeline outputs by step
+└── gbs                  # the ./gbs CLI entry point
+```
