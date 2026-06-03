@@ -43,7 +43,7 @@ See the project root README's "Open-source pipeline (vLLM)" section.
 | `gbs/cli.py` | CLI entry point — `./gbs <subcommand>` |
 | `gbs/runtime.py` | The `run_skill` tool-calling loop |
 | `gbs/skill_loader.py` | Parses SKILL.md frontmatter + body |
-| `gbs/llm_client.py` | OpenAI SDK wrapper pointed at vLLM |
+| `gbs/llm_client.py` | Hugging Face InferenceClient wrapper pointed at vLLM |
 | `gbs/transcript.py` | JSONL transcript writer (Claude Code-shaped) |
 | `gbs/config.py` | Centralized config (env-overridable) |
 | `gbs/tools/` | Tool implementations (Bash, Read, Write, Edit, Glob, Grep, Skill) |

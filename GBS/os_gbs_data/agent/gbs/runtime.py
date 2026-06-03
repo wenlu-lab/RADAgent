@@ -124,7 +124,7 @@ def run_skill(
         _trim_messages(messages)
         response = client.chat(
             messages=messages,
-            tools=runtime.openai_schemas(),
+            tools=runtime.tool_schemas(),
         )
         transcript.record_assistant(response, model_label=skill.model_label)
 

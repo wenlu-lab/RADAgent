@@ -21,8 +21,8 @@ class Tool:
         raise NotImplementedError
 
 
-def build_openai_schema(tool: Tool) -> dict[str, Any]:
-    """Convert a Tool to OpenAI function-calling JSON schema."""
+def build_tool_schema(tool: Tool) -> dict[str, Any]:
+    """Convert a Tool to function-calling JSON schema."""
     json_schema = tool.args_model.model_json_schema()
     # Pydantic emits "title" and "$defs" we don't need; strip noise.
     for key in ("title",):
@@ -62,8 +62,8 @@ class ToolRuntime:
         except Exception as e:
             return ToolResult(text=f"{name} raised {type(e).__name__}: {e}", is_error=True)
 
-    def openai_schemas(self) -> list[dict[str, Any]]:
-        return [build_openai_schema(t) for n, t in self._tools.items() if self.is_allowed(n)]
+    def tool_schemas(self) -> list[dict[str, Any]]:
+        return [build_tool_schema(t) for n, t in self._tools.items() if self.is_allowed(n)]
 
     def descriptions(self) -> dict[str, str]:
         return {n: t.description for n, t in self._tools.items() if self.is_allowed(n)}

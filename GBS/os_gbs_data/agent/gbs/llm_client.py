@@ -1,4 +1,4 @@
-"""Thin wrapper around the OpenAI SDK pointed at vLLM.
+"""Thin wrapper around Hugging Face InferenceClient pointed at vLLM.
 
 Encapsulates: client construction, request timeouts (1h for long Bash polls),
 and response normalization into our internal types.
@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import Any
-from openai import OpenAI
+from huggingface_hub import InferenceClient
 
 
 @dataclass
@@ -31,11 +31,11 @@ class ChatMessage:
 
 
 class LLMClient:
-    """Calls vLLM's OpenAI-compatible /v1/chat/completions endpoint."""
+    """Calls vLLM's /v1/chat/completions endpoint via Hugging Face InferenceClient."""
 
     def __init__(self, base_url: str, model_name: str, request_timeout: float = 3600.0):
-        # api_key is required by the SDK but vLLM doesn't validate it.
-        self._client = OpenAI(base_url=base_url, api_key="not-needed", timeout=request_timeout)
+        # api_key is required by the client but vLLM doesn't validate it.
+        self._client = InferenceClient(base_url=base_url, api_key="not-needed", timeout=request_timeout)
         self._model_name = model_name
 
     def chat(
@@ -59,10 +59,18 @@ class LLMClient:
         tool_calls: list[ToolCall] = []
         if msg.tool_calls:
             for tc in msg.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments)
-                except json.JSONDecodeError:
-                    args = {"_raw": tc.function.arguments}
+                # InferenceClient may return arguments as a JSON string or an
+                # already-parsed dict (behavior varies by version); handle both.
+                raw = tc.function.arguments
+                if isinstance(raw, str):
+                    try:
+                        args = json.loads(raw)
+                    except json.JSONDecodeError:
+                        args = {"_raw": raw}
+                elif isinstance(raw, dict):
+                    args = raw
+                else:
+                    args = {}
                 tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
         usage = TokenUsage(
             input_tokens=getattr(response.usage, "prompt_tokens", 0),
