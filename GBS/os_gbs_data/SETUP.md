@@ -1,6 +1,14 @@
 # Open-Source Pipeline Setup Guide
 
-Run the full GBS bioinformatics pipeline on a self-hosted Qwen3-Coder + vLLM stack — no commercial API needed. This guide covers a fresh server with nothing installed.
+> **⚠️ Superseded by [`README.md`](README.md).** The stack no longer uses a vLLM server —
+> the agent loads `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` **in-process** via Hugging Face
+> `transformers`. There is no server to start and no `./gbs serve`. Follow `README.md` for
+> authoritative, up-to-date steps; the notes below are kept for reference and lightly
+> corrected.
+
+Run the full GBS bioinformatics pipeline on a self-hosted Qwen3-Coder model loaded
+in-process with Hugging Face `transformers` — no inference server, no commercial API
+needed. This guide covers a fresh server with nothing installed.
 
 **Total setup time:** ~45-60 min (model download dominates).
 **Total run time per pipeline:** ~2-5 hours wall-clock for ~500 paired-end samples.
@@ -129,20 +137,16 @@ Expected output:
 ```
 Project root: /path/to/os_gbs_data
 Skills dir:   /path/to/os_gbs_data/.claude/skills
-vLLM URL:     http://127.0.0.1:8000/v1
-vLLM alive:   True
-Model name:   qwen3-coder
-GPU free MB:  4724      ← normal — vLLM has reserved its budget
+Model id:     Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
+Torch dtype:  auto
+Device map:   auto
+Max ctx tok:  32768
+GPU free MB:  80000      ← the card should be ~empty before the first run
 ```
 
-`vLLM alive: False` means the server isn't running. Start it:
-
-```bash
-tmux new -d -s vllm 'bash infra/vllm_serve.sh 2>&1 | tee .gbs/vllm.log'
-# wait 60-90 s for the model to load:
-until curl -sf http://127.0.0.1:8000/v1/models > /dev/null; do sleep 5; done
-echo "vLLM ready"
-```
+There is no server to start — the model loads in-process on the first `./gbs orchestrator`
+(or `./gbs run`) call, which takes a few minutes and then stays resident. Just make sure
+the GPU is free beforehand.
 
 ---
 
@@ -214,13 +218,7 @@ python3.11 -m venv .venv
 .venv/bin/pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
     --index-url https://download.pytorch.org/whl/cu118
 
-# vLLM 0.10.1 is the FIRST version with the qwen3_coder tool parser.
-# transformers MUST be pinned to 4.55.x — vLLM 0.10.1 declares
-# transformers>=4.55 with no upper bound, but 5.x removes APIs vLLM uses.
-.venv/bin/pip install vllm==0.10.1
-.venv/bin/pip install "transformers==4.55.4"
-
-# The agent itself:
+# The agent itself — pulls transformers, accelerate, compressed-tensors:
 .venv/bin/pip install -e ./agent
 
 # Pre-download the model (~30 GB):

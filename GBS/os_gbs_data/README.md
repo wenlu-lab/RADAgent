@@ -5,9 +5,10 @@ paired-end Illumina FASTQ files and produces a final SNP panel VCF with markers 
 distributed across all chromosomes — ready for genotyping-array design.
 
 The 16 steps run **autonomously from a single command**, driven by a small Python agent
-runtime (`agent/`) that talks to a **self-hosted Qwen3-Coder model on vLLM** — no
-commercial LLM API required. Each step is executed by an LLM "subagent" that follows a
-detailed `SKILL.md` spec, with **4 layers of built-in error handling**.
+runtime (`agent/`) that loads a **self-hosted Qwen3-Coder model in-process via Hugging
+Face `transformers`** — no inference server, no commercial LLM API required. Each step is
+executed by an LLM "subagent" that follows a detailed `SKILL.md` spec, with **4 layers of
+built-in error handling**.
 
 ```
 Raw FASTQs ─▶ Trim ─▶ Enzyme Filter ─▶ Align ─▶ Genotype ─▶ Filter ─▶ SNP Panel
@@ -29,12 +30,18 @@ tested against:
 
 | Component | Value |
 |---|---|
-| Model | `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` (served as `qwen3-coder`) |
-| Inference server | vLLM `0.10.1` (first release with the `qwen3_coder` tool parser) |
+| Model | `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` (FP8 weights → bf16 in VRAM, ~60 GB) |
+| Inference | **in-process** Hugging Face `transformers` (no server); tool calls parsed by `gbs/qwen3_coder_parser.py` |
 | Python | 3.11, in a project-local `.venv/` |
-| Pinned deps | `torch==2.7.1` (cu118 wheels), `transformers==4.55.4` |
+| Pinned deps | `torch>=2.1` (cu118 wheels), `transformers>=4.55`, `accelerate`, `compressed-tensors` |
 | Runtime | the `gbs-agent` package in `agent/`, invoked via the `./gbs` CLI |
 | GPU | 1× NVIDIA A100 80GB / H100 80GB (≥75 GB VRAM) |
+
+> **Effective context window:** in-process `transformers` has no PagedAttention, so the
+> usable window is much smaller than vLLM's 262K (default `GBS_MAX_CONTEXT_TOKENS=32768`,
+> tune to your GPU). Long agentic loops also re-encode the prompt each turn, so a run is
+> slower than the old vLLM setup. This is the accepted trade-off for loading the model
+> directly with no server.
 
 The bioinformatics scripts in `00-scripts/` are plain Bash/Python/R/Perl and are **not**
 LLM-specific. The skills in `.claude/skills/` were originally authored for Claude Code;
@@ -47,12 +54,12 @@ model. See `agent/README.md` for a deeper architecture write-up.
 ./gbs orchestrator
    │
    ▼
-[orchestrator: a Python process talking to vLLM]
+[orchestrator: one Python process, model loaded in-process]
    │   • runs Bash pre-flight + on-disk cross-checks
    │   • writes timing/status to gbs-pipeline.log
    │   • decides retries / invokes the debugger
    │
-   └── Skill("gbs-5-bwa") ── spawns a fresh subprocess ─▶ [step subagent, isolated context]
+   └── Skill("gbs-5-bwa") ── in-process run_skill() ─▶ [step subagent, fresh-context messages]
                                                                 │  Bash / Read / Grep / Glob
                                                                 ▼
                                                            bwa mem … | samtools …
@@ -68,10 +75,10 @@ is exactly what the **`./gbs view`** TUI reads (see [Viewing runs](#viewing-runs
 Assuming the system tools and model are already installed (see [Installation](#installation)):
 
 ```bash
-./gbs serve            # start vLLM (leave running; ~60-90s to load the model)
-./gbs status           # sanity check — expect "vLLM alive: True"
+./gbs status           # sanity check — prints model id + GPU free
 
 # run the full pipeline in the background, logging to .gbs/ (gives the viewer a session log)
+# the model loads in-process on the first call (a few minutes), then stays resident
 nohup ./gbs orchestrator > .gbs/orchestrator-$(date +%Y%m%d-%H%M%S).log 2>&1 &
 
 ./gbs view             # watch it live in the TUI
@@ -142,8 +149,9 @@ bash setup.sh
 ```
 
 `setup.sh` is idempotent and will: verify hardware/driver/Python, warn about any missing
-bioinformatics tools, create `.venv/` with the pinned `torch`/`vLLM`/`transformers` and
-install the agent (`pip install -e ./agent`), then pre-download the ~30 GB model.
+bioinformatics tools, create `.venv/` with the pinned `torch`/`transformers`/`accelerate`/
+`compressed-tensors` and install the agent (`pip install -e ./agent`), then pre-download
+the ~30 GB model.
 
 <details>
 <summary>Manual Python install (if you'd rather not use setup.sh)</summary>
@@ -154,15 +162,13 @@ python3.11 -m venv .venv
 # torch — cu118 wheels are forward-compatible with any driver ≥ 470:
 .venv/bin/pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
     --index-url https://download.pytorch.org/whl/cu118
-.venv/bin/pip install vllm==0.10.1
-.venv/bin/pip install "transformers==4.55.4"   # 5.x removes APIs vLLM 0.10.1 uses
-.venv/bin/pip install -e ./agent
+.venv/bin/pip install -e ./agent   # pulls transformers, accelerate, compressed-tensors
 .venv/bin/huggingface-cli download Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
 ```
 </details>
 
-The `./gbs` wrapper and `infra/vllm_serve.sh` call the venv binaries directly — you never
-need to `source .venv/bin/activate`.
+The `./gbs` wrapper calls the venv binaries directly — you never need to
+`source .venv/bin/activate`.
 
 ### 4. Add your data
 
@@ -193,10 +199,11 @@ SRR30282940,CTCACT,P01,ROW-05-22,1,A02,,DO NOT modify the column titles in the h
 - Use plate-position format `A01`, not `A1`.
 - Lane names must match your FASTQ prefixes (without `_1.fastq.gz`).
 
-### 5. Start vLLM and sanity-check
+### 5. Sanity-check
+
+There is no server to start — the model loads in-process on the first agent call.
 
 ```bash
-./gbs serve     # or: tmux new -d -s vllm 'bash infra/vllm_serve.sh 2>&1 | tee .gbs/vllm.log'
 ./gbs status
 ```
 
@@ -205,13 +212,15 @@ Expected `./gbs status`:
 ```
 Project root: /path/to/os_gbs_data
 Skills dir:   /path/to/os_gbs_data/.claude/skills
-vLLM URL:     http://127.0.0.1:8000/v1
-vLLM alive:   True
-Model name:   qwen3-coder
-GPU free MB:  4724      ← normal: vLLM has already reserved its KV-cache budget
+Model id:     Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
+Torch dtype:  auto
+Device map:   auto
+Max ctx tok:  32768
+GPU free MB:  80000      ← the card should be ~empty before the first run
 ```
 
-If `vLLM alive: False`, the server is still loading — wait 60–90 s and retry.
+The GPU should be nearly empty here; the ~60 GB load happens when you launch the
+orchestrator (or `./gbs run`). Make sure no other process is holding VRAM.
 
 ---
 
@@ -334,8 +343,7 @@ attempts; a debugger invocation appears as its own entry.
 ## `./gbs` command reference
 
 ```bash
-./gbs status                      # environment + vLLM health + recent sessions
-./gbs serve                       # start the vLLM server
+./gbs status                      # environment + model/GPU info + recent sessions
 ./gbs view [session] [--no-live]  # browse runs in the TUI
 ./gbs orchestrator                # run the full pipeline (steps 0-15)
 ./gbs orchestrator 5              # resume from step 5
@@ -416,11 +424,11 @@ pytest tests/test_e2e.py           # full clean run + validate final_snp_panel.v
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `vLLM alive: False` after `./gbs serve` | Model still loading | Wait 60–90 s, retry `./gbs status` |
-| `RuntimeError: NVIDIA driver too old` | torch built for newer CUDA than the driver | Use the cu118 torch wheels (Installation §3); don't bare `pip install vllm` (pulls cu130 torch) |
-| `ValueError: type fp8e4nv not supported` | A100/Ampere has no hardware FP8 | `infra/vllm_serve.sh` already drops `--kv-cache-dtype fp8` — don't re-add it |
-| `AttributeError: Qwen2Tokenizer has no attribute all_special_tokens_extended` | transformers 5.x installed | `.venv/bin/pip install "transformers==4.55.4"` |
-| `ConnectError: Connection refused` mid-run | vLLM crashed | Check `tail .gbs/vllm.log`; restart `./gbs serve` |
+| First run pauses minutes before any output | The ~60 GB model is loading into VRAM (one-time per process) | Normal — watch `nvidia-smi`; it stays resident after |
+| `RuntimeError: NVIDIA driver too old` | torch built for newer CUDA than the driver | Use the cu118 torch wheels (Installation §3) |
+| CUDA out of memory during a long step | Context too large for in-process KV cache (no PagedAttention) | Lower `GBS_MAX_CONTEXT_TOKENS` (e.g. `export GBS_MAX_CONTEXT_TOKENS=24576`) and re-run |
+| Model fails to load / FP8 kernel error on Ampere | FP8 weights need dequant to bf16 | Ensure `compressed-tensors` is installed, or set `GBS_MODEL_ID=Qwen/Qwen3-Coder-30B-A3B-Instruct` (bf16 checkpoint) |
+| `./gbs status` shows little GPU free before a run | Another process is holding VRAM | Free the card; the model needs ~60 GB contiguous |
 | A step reports FAILURE but output files exist | The model judged its own work poorly | Check the files; resume with `./gbs orchestrator <next-step>` |
 | Log shows fake timestamps like "2023-05-15…" | Model copied a SKILL.md template literally | The real timestamps are in `gbs-pipeline.log` / the `.gbs` transcripts |
 
@@ -441,7 +449,7 @@ os_gbs_data/
 ├── 08-genome/           # ** your reference genome **
 ├── 10-log_files/        # generated: timestamped execution logs
 ├── .gbs/                # generated: run logs + JSONL transcripts (what ./gbs view reads)
-├── infra/               # vllm_serve.sh + systemd units
+├── infra/               # deployment notes (model loads in-process; no server)
 ├── tests/               # pipeline parity/e2e tests
 ├── docs/superpowers/    # design specs + implementation plans
 ├── setup.sh             # one-shot venv + model installer

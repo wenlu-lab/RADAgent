@@ -1,6 +1,6 @@
 # gbs-agent
 
-Open-source agentic runtime that drives the GBS bioinformatics pipeline using a locally-served Qwen3-Coder model on vLLM.
+Open-source agentic runtime that drives the GBS bioinformatics pipeline using an in-process Qwen3-Coder model loaded directly with Hugging Face `transformers` (no inference server).
 
 ## What this is
 
@@ -12,18 +12,18 @@ A thin Python orchestrator that reads `.claude/skills/SKILL.md` files (originall
 ./gbs orchestrator
    │
    ▼
-[orchestrator skill, in a Python process, talking to vLLM]
+[orchestrator skill, one Python process, model loaded in-process]
    │
    ├── Bash, Read, Write, Edit, Glob, Grep tools
    │
-   └── Skill("gbs-5-bwa") ── spawns a subprocess ──▶ [step subagent, fresh context]
+   └── Skill("gbs-5-bwa") ── in-process run_skill() ──▶ [step subagent, fresh context]
                                                           │
                                                           ├── Bash, Read, Grep, Glob
                                                           ▼
                                                      bwa mem ... | samtools ...
 ```
 
-Each `Skill` call is a fresh subprocess — that's how we get isolated context windows per subagent (mirroring Claude Code's behavior).
+Each `Skill` call runs `run_skill()` in-process with a brand-new `messages` list — that's how we get isolated context windows per subagent (mirroring Claude Code's behavior) while keeping the 30B model resident in VRAM. The model is a process-wide singleton, so loading it once serves every subagent.
 
 ## Install (dev)
 
@@ -34,7 +34,7 @@ pip install -e ./agent
 
 ## Setup (one-time)
 
-See the project root README's "Open-source pipeline (vLLM)" section.
+See the project root README's "Installation" section. The model loads in-process on the first agent call — there is no server to start.
 
 ## Layout
 
@@ -43,7 +43,10 @@ See the project root README's "Open-source pipeline (vLLM)" section.
 | `gbs/cli.py` | CLI entry point — `./gbs <subcommand>` |
 | `gbs/runtime.py` | The `run_skill` tool-calling loop |
 | `gbs/skill_loader.py` | Parses SKILL.md frontmatter + body |
-| `gbs/llm_client.py` | Hugging Face InferenceClient wrapper pointed at vLLM |
+| `gbs/llm_client.py` | In-process transformers backend (loads Qwen3-Coder, generates locally) |
+| `gbs/model_backend.py` | Process-wide singleton model + tokenizer loader |
+| `gbs/qwen3_coder_parser.py` | Parses Qwen3-Coder tool-call markup → structured calls |
+| `gbs/llm_types.py` | Shared `TokenUsage` / `ToolCall` / `ChatMessage` dataclasses |
 | `gbs/transcript.py` | JSONL transcript writer (Claude Code-shaped) |
 | `gbs/config.py` | Centralized config (env-overridable) |
 | `gbs/tools/` | Tool implementations (Bash, Read, Write, Edit, Glob, Grep, Skill) |
@@ -54,19 +57,22 @@ See the project root README's "Open-source pipeline (vLLM)" section.
 | Variable | Default | Purpose |
 |---|---|---|
 | `GBS_PROJECT_ROOT` | (auto-detect) | Project root containing `.claude/skills/` |
-| `GBS_VLLM_URL` | `http://127.0.0.1:8000/v1` | vLLM endpoint |
-| `GBS_MODEL_NAME` | `qwen3-coder` | `--served-model-name` from vLLM |
+| `GBS_MODEL_ID` | `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` | HF model id loaded in-process |
+| `GBS_TORCH_DTYPE` | `auto` | dtype for `from_pretrained` (e.g. `bfloat16`) |
+| `GBS_DEVICE_MAP` | `auto` | `device_map` for `from_pretrained` |
+| `GBS_MAX_CONTEXT_TOKENS` | `32768` | Effective context window (drives message trimming) |
+| `GBS_MODEL_LABEL` | `qwen3-coder` | Short label recorded in transcripts |
 | `GBS_MAX_TOOL_CALLS` | `200` | Hard cap per skill invocation |
 | `GBS_BASH_MAX_TIMEOUT_MS` | `3600000` | Max Bash timeout (1 hour) |
-| `GBS_SUBAGENT_TIMEOUT_SEC` | `86400` | Max subprocess timeout for Skill tool |
+| `GBS_SUBAGENT_TIMEOUT_SEC` | `86400` | (unused since subagents run in-process) |
 
 ## Tests
 
 ```bash
-# Unit tests (no vLLM required)
+# Unit tests (no model required — pure logic, e.g. the tool-call parser)
 pytest agent/tests/
 
-# Integration / parity tests (vLLM must be running)
+# Integration / parity tests (load the in-process model; needs the GPU)
 pytest tests/test_step_parity.py
 
 # End-to-end (clean run + validation, ~4h)
