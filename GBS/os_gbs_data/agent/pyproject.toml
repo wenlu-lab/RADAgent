@@ -8,6 +8,10 @@ version = "0.1.0"
 description = "Open-source agentic runtime for the GBS bioinformatics pipeline"
 requires-python = ">=3.11"
 dependencies = [
+    "transformers>=4.55",
+    "torch>=2.1",
+    "accelerate>=0.30",
+    "compressed-tensors>=0.7",
     "huggingface_hub>=0.27",
     "pydantic>=2.7.0",
     "pyyaml>=6.0",
