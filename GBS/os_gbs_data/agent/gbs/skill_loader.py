@@ -18,7 +18,7 @@ class Skill:
     body: str
     allowed_tools: list[str] = field(default_factory=list)
     model_label: str = "sonnet"            # legacy frontmatter — kept for telemetry
-    model_alias: str = "qwen3-coder"       # the actual served model on vLLM
+    model_alias: str = "qwen3-coder"       # short model label recorded in transcripts
     context: str = ""                       # "fork" or empty
     argument_hint: str = ""
     source_path: Path | None = None

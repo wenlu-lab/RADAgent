@@ -14,16 +14,21 @@ def project_root() -> Path:
 
 
 @pytest.fixture(scope="session")
-def vllm_alive():
-    """Ensure vLLM is reachable; skip the whole module if not."""
-    from urllib.request import Request, urlopen
-    from urllib.error import URLError
+def gpu_available():
+    """Skip the module unless a CUDA GPU with enough free VRAM is present.
+    These tests run ./gbs run, which loads the ~60 GB model in-process."""
     try:
-        with urlopen(Request("http://127.0.0.1:8000/v1/models"), timeout=3) as r:
-            if r.status != 200:
-                pytest.skip("vLLM not healthy")
-    except URLError:
-        pytest.skip("vLLM not reachable on localhost:8000 — start with ./gbs serve")
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pytest.skip("nvidia-smi unavailable — no GPU to load the in-process model")
+    if out.returncode != 0:
+        pytest.skip("nvidia-smi failed — cannot verify GPU for the in-process model")
+    free_mb = int(out.stdout.strip().splitlines()[0])
+    if free_mb < 60000:
+        pytest.skip(f"GPU has only {free_mb}MB free; need ~60GB to load the model in-process")
 
 
 @pytest.fixture
@@ -35,7 +40,7 @@ def clean_step(project_root):
 
 
 @pytest.fixture
-def run_step(project_root, vllm_alive):
+def run_step(project_root, gpu_available):
     """Returns a function that runs a single skill via ./gbs run."""
     def _run(skill_name: str, args: str = "") -> int:
         cmd = ["./gbs", "run", skill_name]

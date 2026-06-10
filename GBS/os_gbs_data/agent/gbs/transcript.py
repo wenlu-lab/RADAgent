@@ -64,7 +64,7 @@ class TranscriptWriter:
         usage_obj = {
             "input_tokens": msg.usage.input_tokens if msg.usage else 0,
             "output_tokens": msg.usage.output_tokens if msg.usage else 0,
-            # vLLM doesn't populate Anthropic-style cache fields; record 0 for compatibility.
+            # The in-process backend doesn't populate Anthropic-style cache fields; record 0.
             "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0,
         }

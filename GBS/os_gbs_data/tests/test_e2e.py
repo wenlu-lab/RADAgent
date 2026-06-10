@@ -20,7 +20,7 @@ def _human_time(secs: float) -> str:
 
 
 @pytest.mark.timeout(7 * 3600)  # cap at 7h
-def test_full_pipeline_end_to_end(project_root, vllm_alive, reference_dir):
+def test_full_pipeline_end_to_end(project_root, gpu_available, reference_dir):
     """Clean everything, run ./gbs orchestrator, validate final_snp_panel.vcf."""
     # 1. Clean
     subprocess.run(["bash", "clean_pipeline.sh", "all"], cwd=project_root, check=True)

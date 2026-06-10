@@ -41,7 +41,7 @@ def _comparator(step: int):
     list(STEP_SKILLS.keys()),
     ids=[f"{n}-{s}" for n, s in STEP_SKILLS.items()],
 )
-def test_step_parity(step, project_root, vllm_alive, clean_step, run_step, reference_dir):
+def test_step_parity(step, project_root, gpu_available, clean_step, run_step, reference_dir):
     """Run step N under the OS orchestrator; compare outputs against reference."""
     skill_name = STEP_SKILLS[step]
     reference = load_reference(reference_dir, step)

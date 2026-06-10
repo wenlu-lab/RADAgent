@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# setup.sh — one-shot setup for the open-source GBS pipeline (vLLM + Qwen3-Coder).
+# setup.sh — one-shot setup for the open-source GBS pipeline (in-process Qwen3-Coder).
 #
 # Run this from the project root after `git clone`. It will:
 #   1. Verify hardware/driver/Python prerequisites
 #   2. Verify bioinformatics CLI tools are on PATH (warns if missing)
-#   3. Create .venv/ with pinned torch/vLLM/transformers/agent
+#   3. Create .venv/ with torch + the agent (transformers/accelerate/compressed-tensors)
 #   4. Pre-download the Qwen3-Coder-30B-A3B-Instruct-FP8 model (~30 GB)
 #   5. Print next steps
 #
@@ -116,33 +116,24 @@ assert torch.cuda.is_available(), 'torch.cuda.is_available() == False — driver
 print(f'  torch {torch.__version__}, CUDA available, device={torch.cuda.get_device_name(0)}')
 "
 
-# vLLM 0.10.1 — first version with the qwen3_coder tool parser
-if ! .venv/bin/python -c "import vllm; assert vllm.__version__ == '0.10.1'" 2>/dev/null; then
-    yellow "Installing vllm 0.10.1 (~440 MB)..."
-    .venv/bin/pip install --quiet vllm==0.10.1
-    green "vllm installed"
-else
-    green "vllm already installed"
-fi
-
-# transformers MUST be 4.55.x — vLLM 0.10.1 declares >=4.55 with no upper bound
-# but transformers 5.x removes Qwen2Tokenizer APIs vLLM uses.
-.venv/bin/pip install --quiet "transformers==4.55.4"
-green "transformers pinned to 4.55.4"
-
-# Agent itself
+# Agent itself — pulls transformers, accelerate, compressed-tensors per pyproject
 .venv/bin/pip install --quiet -e ./agent
 green "agent installed (editable)"
+
+# Pin transformers to the validated 4.55.4 for in-process Qwen3-Coder. transformers
+# 5.x is untested against this stack; pin for reproducibility on fresh installs.
+.venv/bin/pip install --quiet "transformers==4.55.4"
+green "transformers pinned to 4.55.4"
 
 # Test deps (so the parity tests can run later)
 .venv/bin/pip install --quiet "pytest>=8.0" "pytest-mock>=3.12" "pytest-timeout>=2.3"
 
 # Quick import check
-.venv/bin/python -c "import torch, vllm, transformers, gbs.config; print('  imports OK')"
+.venv/bin/python -c "import torch, transformers, accelerate, gbs.config; print('  imports OK')"
 green "All Python packages OK"
 
 # .gbs/ holds the agent's transcripts + runtime.log (see agent/gbs/config.py);
-# the next-steps below also redirect vllm/orchestrator logs into it.
+# the next-steps below also redirect orchestrator logs into it.
 if [ ! -d .gbs ]; then
     mkdir -p .gbs
     green "Created .gbs/ (runtime transcripts + logs)"
@@ -178,18 +169,14 @@ Setup is done. Next steps:
                        makeblastdb -dbtype nucl -in 08-genome/genome.fasta -input_type fasta -title genome.fasta
    - Sample CSV:       edit 01-info_files/sample_information.csv
 
-2. Start vLLM (leave it running in tmux):
-   tmux new -d -s vllm 'bash infra/vllm_serve.sh 2>&1 | tee .gbs/vllm.log'
-   until curl -sf http://127.0.0.1:8000/v1/models > /dev/null; do sleep 5; done
-
-3. Sanity check:
+2. Sanity check (no server to start — the model loads in-process on first run):
    ./gbs status
 
-4. Run the pipeline:
+3. Run the pipeline (the ~60 GB model loads into VRAM on the first call, ~minutes):
    nohup ./gbs orchestrator > .gbs/orchestrator-\$(date +%Y%m%d-%H%M%S).log 2>&1 &
    tail -F .gbs/orchestrator-*.log
 
-5. When done:
+4. When done:
    ls -la final_snp_panel.vcf
    grep -cv '^#' final_snp_panel.vcf
 
