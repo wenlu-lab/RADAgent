@@ -23,19 +23,21 @@ class BudgetExhausted(Exception):
     pass
 
 
-# Conservative cap on total chars in `messages`. vLLM's qwen3-coder context is
-# 262144 tokens. At ~3.5 chars/token this is ~900K chars; we cap at 600K to
-# leave headroom for the system prompt, tool schemas and the model's response.
-_CONTEXT_CHAR_BUDGET = 600_000
+# Conservative cap on total chars in `messages`. In-process transformers has no
+# PagedAttention, so the effective window is much smaller than vLLM's 262144.
+# At ~3.5 chars/token, the per-run budget is derived from cfg.max_context_tokens
+# (see run_skill); this default is only a fallback when no budget is passed.
+_DEFAULT_CONTEXT_CHAR_BUDGET = 100_000
+_CHARS_PER_TOKEN = 3.5
 
 
-def _trim_messages(messages: list[dict]) -> list[dict]:
+def _trim_messages(messages: list[dict], char_budget: int = _DEFAULT_CONTEXT_CHAR_BUDGET) -> list[dict]:
     """If `messages` exceeds the char budget, replace the BODY of the oldest
     tool-result messages with a placeholder. Keep the system prompt, the
     initial user message, and never trim the most recent few exchanges.
     Mutates and returns `messages`."""
     total = sum(len(str(m.get("content", "") or "")) for m in messages)
-    if total <= _CONTEXT_CHAR_BUDGET:
+    if total <= char_budget:
         return messages
     # Walk from the front (after system + first user), trimming tool results.
     placeholder = "[older tool result trimmed to keep context within model's window]"
@@ -46,7 +48,7 @@ def _trim_messages(messages: list[dict]) -> list[dict]:
         if m.get("role") == "tool" and m.get("content") != placeholder:
             m["content"] = placeholder
             total = sum(len(str(mm.get("content", "") or "")) for mm in messages)
-            if total <= _CONTEXT_CHAR_BUDGET:
+            if total <= char_budget:
                 return messages
     return messages
 
@@ -111,7 +113,13 @@ def run_skill(
     user_msg = f"$ARGUMENTS: {args}"
     transcript.record_user(user_msg)
 
-    client = LLMClient(base_url=cfg.vllm_base_url, model_name=cfg.vllm_model_name)
+    client = LLMClient(
+        model_id=cfg.model_id,
+        torch_dtype=cfg.torch_dtype,
+        device_map=cfg.device_map,
+        max_context_tokens=cfg.max_context_tokens,
+    )
+    char_budget = int(cfg.max_context_tokens * _CHARS_PER_TOKEN)
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_msg},
@@ -121,7 +129,7 @@ def run_skill(
     nudges_used = 0
 
     for _ in range(cfg.max_tool_calls):
-        _trim_messages(messages)
+        _trim_messages(messages, char_budget)
         response = client.chat(
             messages=messages,
             tools=runtime.tool_schemas(),

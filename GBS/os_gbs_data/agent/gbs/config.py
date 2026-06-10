@@ -27,8 +27,11 @@ class Config:
     skills_dir: Path
     transcripts_dir: Path
     runtime_log: Path
-    vllm_base_url: str
-    vllm_model_name: str
+    model_id: str
+    torch_dtype: str
+    device_map: str
+    max_context_tokens: int
+    model_label: str
     max_tool_calls: int
     max_nudges: int
     bash_max_timeout_ms: int
@@ -42,8 +45,11 @@ class Config:
             skills_dir=root / ".claude" / "skills",
             transcripts_dir=root / ".gbs" / "transcripts",
             runtime_log=root / ".gbs" / "runtime.log",
-            vllm_base_url=os.environ.get("GBS_VLLM_URL", "http://127.0.0.1:8000/v1"),
-            vllm_model_name=os.environ.get("GBS_MODEL_NAME", "qwen3-coder"),
+            model_id=os.environ.get("GBS_MODEL_ID", "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"),
+            torch_dtype=os.environ.get("GBS_TORCH_DTYPE", "auto"),
+            device_map=os.environ.get("GBS_DEVICE_MAP", "auto"),
+            max_context_tokens=int(os.environ.get("GBS_MAX_CONTEXT_TOKENS", "32768")),
+            model_label=os.environ.get("GBS_MODEL_LABEL", "qwen3-coder"),
             max_tool_calls=int(os.environ.get("GBS_MAX_TOOL_CALLS", "200")),
             max_nudges=int(os.environ.get("GBS_MAX_NUDGES", "3")),
             bash_max_timeout_ms=int(os.environ.get("GBS_BASH_MAX_TIMEOUT_MS", "3600000")),
