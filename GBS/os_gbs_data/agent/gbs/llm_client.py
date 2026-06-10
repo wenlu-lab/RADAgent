@@ -1,79 +1,67 @@
-"""Thin wrapper around Hugging Face InferenceClient pointed at vLLM.
+"""In-process LLM client: loads Qwen3-Coder via transformers and generates
+locally. No server. Public types (TokenUsage/ToolCall/ChatMessage) are
+re-exported here because transcript.py imports them from this module.
 
-Encapsulates: client construction, request timeouts (1h for long Bash polls),
-and response normalization into our internal types.
-"""
+Tool calling: apply_chat_template injects the tool schemas; the model emits
+Qwen3-Coder tool-call markup; qwen3_coder_parser turns it back into structured
+calls. A `</tool_call>` stop string enforces one tool call per turn (the loop in
+runtime.py handles multi-turn), preventing the model from hallucinating tool
+output after a call."""
 from __future__ import annotations
-import json
-from dataclasses import dataclass, field
-from typing import Any
-from huggingface_hub import InferenceClient
+import torch
+from gbs.llm_types import TokenUsage, ToolCall, ChatMessage  # re-exported
+from gbs.model_backend import get_model
+from gbs.qwen3_coder_parser import parse
 
-
-@dataclass
-class TokenUsage:
-    input_tokens: int
-    output_tokens: int
-
-
-@dataclass
-class ToolCall:
-    id: str
-    name: str
-    arguments: dict[str, Any]
-
-
-@dataclass
-class ChatMessage:
-    content: str
-    tool_calls: list[ToolCall] = field(default_factory=list)
-    usage: TokenUsage | None = None
+__all__ = ["TokenUsage", "ToolCall", "ChatMessage", "LLMClient"]
 
 
 class LLMClient:
-    """Calls vLLM's /v1/chat/completions endpoint via Hugging Face InferenceClient."""
+    """Loads the model in-process and generates tool-calling completions."""
 
-    def __init__(self, base_url: str, model_name: str, request_timeout: float = 3600.0):
-        # api_key is required by the client but vLLM doesn't validate it.
-        self._client = InferenceClient(base_url=base_url, api_key="not-needed", timeout=request_timeout)
-        self._model_name = model_name
+    def __init__(
+        self,
+        model_id: str,
+        torch_dtype: str = "auto",
+        device_map: str = "auto",
+        max_context_tokens: int = 32768,
+    ):
+        self._model, self._tokenizer = get_model(model_id, torch_dtype, device_map)
+        self._max_context_tokens = max_context_tokens
 
     def chat(
         self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
+        messages: list[dict],
+        tools: list[dict],
         max_tokens: int = 8192,
         temperature: float = 0.0,
     ) -> ChatMessage:
-        kwargs: dict[str, Any] = {
-            "model": self._model_name,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
-        response = self._client.chat.completions.create(**kwargs)
-        msg = response.choices[0].message
-        tool_calls: list[ToolCall] = []
-        if msg.tool_calls:
-            for tc in msg.tool_calls:
-                # InferenceClient may return arguments as a JSON string or an
-                # already-parsed dict (behavior varies by version); handle both.
-                raw = tc.function.arguments
-                if isinstance(raw, str):
-                    try:
-                        args = json.loads(raw)
-                    except json.JSONDecodeError:
-                        args = {"_raw": raw}
-                elif isinstance(raw, dict):
-                    args = raw
-                else:
-                    args = {}
-                tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
-        usage = TokenUsage(
-            input_tokens=getattr(response.usage, "prompt_tokens", 0),
-            output_tokens=getattr(response.usage, "completion_tokens", 0),
+        tok = self._tokenizer
+        enc = tok.apply_chat_template(
+            messages,
+            tools=tools or None,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
         )
-        return ChatMessage(content=msg.content or "", tool_calls=tool_calls, usage=usage)
+        enc = {k: v.to(self._model.device) for k, v in enc.items()}
+        prompt_len = int(enc["input_ids"].shape[1])
+
+        gen_kwargs = dict(
+            max_new_tokens=max_tokens,
+            do_sample=temperature > 0,
+            pad_token_id=tok.eos_token_id,
+            stop_strings=["</tool_call>"],
+            tokenizer=tok,
+        )
+        if temperature > 0:
+            gen_kwargs["temperature"] = temperature
+
+        with torch.no_grad():
+            out = self._model.generate(**enc, **gen_kwargs)
+
+        gen_ids = out[0][prompt_len:]
+        text = tok.decode(gen_ids, skip_special_tokens=True)
+        content, tool_calls = parse(text, tools or [])
+        usage = TokenUsage(input_tokens=prompt_len, output_tokens=int(gen_ids.shape[0]))
+        return ChatMessage(content=content, tool_calls=tool_calls, usage=usage)
