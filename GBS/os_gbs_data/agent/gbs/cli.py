@@ -1,25 +1,12 @@
 """Command-line entry point: ./gbs <subcommand> [args...]"""
 from __future__ import annotations
 import argparse
-import os
 import subprocess
 import sys
-import time
 from pathlib import Path
-from urllib.request import Request, urlopen
-from urllib.error import URLError
 from gbs.config import Config
 from gbs.transcript import fresh_session_id
 from gbs.runtime import run_skill, BudgetExhausted
-
-
-def _vllm_alive(base_url: str, timeout: float = 5.0) -> bool:
-    url = base_url.rstrip("/") + "/models"
-    try:
-        with urlopen(Request(url), timeout=timeout) as resp:
-            return resp.status == 200
-    except URLError:
-        return False
 
 
 def _gpu_free_mb() -> int | None:
@@ -36,29 +23,31 @@ def _gpu_free_mb() -> int | None:
 
 
 def _preflight(cfg: Config) -> None:
-    """Pre-flight checks before running the orchestrator. Exits with helpful message on failure."""
-    if not _vllm_alive(cfg.vllm_base_url):
-        sys.exit(
-            f"vLLM not reachable at {cfg.vllm_base_url}.\n"
-            f"Start it with: ./infra/vllm_serve.sh   (or `./gbs serve`)"
-        )
+    """Pre-flight checks before running the orchestrator. Eagerly loads the model
+    so a load failure surfaces before any pipeline work starts."""
     if not (cfg.project_root / "02-raw").is_dir() or not (cfg.project_root / "00-scripts").is_dir():
         sys.exit(f"Not in project root (no 02-raw/ or 00-scripts/): {cfg.project_root}")
-    # Note: when vLLM is running with --gpu-memory-utilization 0.92, "free" GPU
-    # memory will be small (~5 GB on an 80 GB card) — that's the system overhead
-    # left over after vLLM reserves model weights + KV cache budget. Only fail
-    # if the card is essentially full (another GPU process is hogging memory).
     free = _gpu_free_mb()
-    if free is not None and free < 500:
-        sys.exit(f"GPU has only {free}MB free; another GPU process may be running.")
+    if free is not None and free < 2000:
+        sys.exit(f"GPU has only {free}MB free; cannot load the model. Free the GPU and retry.")
+    try:
+        from gbs.model_backend import get_model
+        get_model(cfg.model_id, cfg.torch_dtype, cfg.device_map)
+    except Exception as e:
+        sys.exit(
+            f"Failed to load {cfg.model_id} in-process: {type(e).__name__}: {e}\n"
+            f"If this is an FP8/kernel error on this GPU, install compressed-tensors or set "
+            f"GBS_MODEL_ID to the bf16 checkpoint (Qwen/Qwen3-Coder-30B-A3B-Instruct)."
+        )
 
 
 def cmd_status(args, cfg: Config) -> int:
     print(f"Project root: {cfg.project_root}")
     print(f"Skills dir:   {cfg.skills_dir}")
-    print(f"vLLM URL:     {cfg.vllm_base_url}")
-    print(f"vLLM alive:   {_vllm_alive(cfg.vllm_base_url)}")
-    print(f"Model name:   {cfg.vllm_model_name}")
+    print(f"Model id:     {cfg.model_id}")
+    print(f"Torch dtype:  {cfg.torch_dtype}")
+    print(f"Device map:   {cfg.device_map}")
+    print(f"Max ctx tok:  {cfg.max_context_tokens}")
     free = _gpu_free_mb()
     print(f"GPU free MB:  {free if free is not None else '(nvidia-smi unavailable)'}")
     transcripts = cfg.transcripts_dir
@@ -79,17 +68,6 @@ def cmd_view(args, cfg: Config) -> int:
     app = GBSViewer(gbs_dir, live=not args.no_live, session_id=args.session)
     app.run()
     return 0
-
-
-def cmd_serve(args, cfg: Config) -> int:
-    if _vllm_alive(cfg.vllm_base_url):
-        print(f"vLLM already responding at {cfg.vllm_base_url}")
-        return 0
-    script = cfg.project_root / "infra" / "vllm_serve.sh"
-    if not script.is_file():
-        sys.exit(f"vLLM serve script not found: {script}")
-    print(f"Starting vLLM via {script}...")
-    os.execvp("bash", ["bash", str(script)])  # exec replaces current process
 
 
 def _make_session_dir(cfg: Config, session_id: str | None = None) -> Path:
@@ -233,7 +211,6 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("status").set_defaults(func=cmd_status)
-    sub.add_parser("serve").set_defaults(func=cmd_serve)
 
     p_view = sub.add_parser("view", help="Browse pipeline runs in a live TUI")
     p_view.add_argument("session", nargs="?", default=None,
