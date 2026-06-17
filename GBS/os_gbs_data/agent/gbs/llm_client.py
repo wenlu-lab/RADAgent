@@ -56,6 +56,11 @@ class LLMClient:
         )
         if temperature > 0:
             gen_kwargs["temperature"] = temperature
+        else:
+            # Greedy decoding: explicitly unset the model's sampling defaults so
+            # transformers doesn't warn (once per turn) that temperature/top_p/top_k
+            # are ignored.
+            gen_kwargs.update(temperature=None, top_p=None, top_k=None)
 
         with torch.no_grad():
             out = self._model.generate(**enc, **gen_kwargs)
