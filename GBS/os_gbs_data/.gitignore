@@ -37,3 +37,6 @@ venv/
 env/
 __pycache__/
 *.pyc
+
+# Documentation
+/docs/
