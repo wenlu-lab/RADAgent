@@ -21,12 +21,32 @@ class Tool:
         raise NotImplementedError
 
 
+def _simplify_param(spec: dict[str, Any]) -> dict[str, Any]:
+    """Flatten one Pydantic property schema into the simple shape Qwen's chat
+    template expects: a concrete `type` plus optional description/default.
+
+    Pydantic emits Optional fields as `anyOf: [{type: X}, {type: null}]` — a list —
+    which the Qwen3-Coder Jinja template can't iterate (it does `.items()` on the
+    type and raises "Can only get item pairs from a mapping"). Collapse it to the
+    non-null variant. Also strips Pydantic `title` noise."""
+    spec = {k: v for k, v in spec.items() if k != "title"}
+    if "anyOf" in spec:
+        variants = [v for v in spec.pop("anyOf") if v.get("type") != "null"]
+        if variants:
+            for k, v in variants[0].items():
+                spec.setdefault(k, v)
+        else:
+            spec.setdefault("type", "string")
+    return spec
+
+
 def build_tool_schema(tool: Tool) -> dict[str, Any]:
-    """Convert a Tool to function-calling JSON schema."""
+    """Convert a Tool to a function-calling JSON schema, sanitized for Qwen's chat template."""
     json_schema = tool.args_model.model_json_schema()
-    # Pydantic emits "title" and "$defs" we don't need; strip noise.
-    for key in ("title",):
-        json_schema.pop(key, None)
+    json_schema.pop("title", None)
+    json_schema.pop("$defs", None)
+    props = json_schema.get("properties", {})
+    json_schema["properties"] = {name: _simplify_param(spec) for name, spec in props.items()}
     return {
         "type": "function",
         "function": {

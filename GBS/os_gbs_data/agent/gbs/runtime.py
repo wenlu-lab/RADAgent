@@ -147,11 +147,13 @@ def run_skill(
         # Append assistant message (with tool calls) to message history
         assistant_msg: dict = {"role": "assistant", "content": response.content or None}
         if response.tool_calls:
+            # Qwen's in-process chat template calls .items() on each tool call's
+            # `arguments`, so it must be a dict (not the OpenAI/vLLM JSON string).
             assistant_msg["tool_calls"] = [
                 {
                     "id": tc.id,
                     "type": "function",
-                    "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
+                    "function": {"name": tc.name, "arguments": tc.arguments},
                 }
                 for tc in response.tool_calls
             ]
