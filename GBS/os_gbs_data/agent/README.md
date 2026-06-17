@@ -25,10 +25,12 @@ A thin Python orchestrator that reads `.claude/skills/SKILL.md` files (originall
 
 Each `Skill` call runs `run_skill()` in-process with a brand-new `messages` list — that's how we get isolated context windows per subagent (mirroring Claude Code's behavior) while keeping the 30B model resident in VRAM. The model is a process-wide singleton, so loading it once serves every subagent.
 
+Which tools a subagent may call is gated by the `allowed-tools` frontmatter in its `SKILL.md`. The orchestrator skill is the one granted `Skill`, which is how it spawns the per-step subagents — individual steps can't recurse into other steps. After a step subagent returns, `step_output_check.py` re-verifies the step's on-disk outputs and can override a spurious `FAILURE` when the files are actually valid.
+
 ## Install (dev)
 
 ```bash
-cd /home/mreddy1/os_gbs_data
+cd /path/to/os_gbs_data        # repo root — where ./gbs and .claude/skills/ live
 pip install -e ./agent
 ```
 
@@ -41,7 +43,8 @@ See the project root README's "Installation" section. The model loads in-process
 | Path | Purpose |
 |---|---|
 | `gbs/cli.py` | CLI entry point — `./gbs <subcommand>` |
-| `gbs/runtime.py` | The `run_skill` tool-calling loop |
+| `gbs/runtime.py` | The `run_skill` tool-calling loop (context trimming + loop-break nudges) |
+| `gbs/step_output_check.py` | Authoritative on-disk output check — overrides a subagent's `FAILURE` when the step's files are actually valid |
 | `gbs/skill_loader.py` | Parses SKILL.md frontmatter + body |
 | `gbs/llm_client.py` | In-process transformers backend (loads Qwen3-Coder, generates locally) |
 | `gbs/model_backend.py` | Process-wide singleton model + tokenizer loader |
@@ -50,6 +53,7 @@ See the project root README's "Installation" section. The model loads in-process
 | `gbs/transcript.py` | JSONL transcript writer (Claude Code-shaped) |
 | `gbs/config.py` | Centralized config (env-overridable) |
 | `gbs/tools/` | Tool implementations (Bash, Read, Write, Edit, Glob, Grep, Skill) |
+| `gbs/viewer/` | The `./gbs view` TUI — `model.py` parses `.gbs/` runs/steps/events, `app.py` is the Textual 3-pane UI |
 | `tests/` | Unit tests (run with `pytest agent/tests/`) |
 
 ## Environment variables
@@ -63,6 +67,7 @@ See the project root README's "Installation" section. The model loads in-process
 | `GBS_MAX_CONTEXT_TOKENS` | `32768` | Effective context window (drives message trimming) |
 | `GBS_MODEL_LABEL` | `qwen3-coder` | Short label recorded in transcripts |
 | `GBS_MAX_TOOL_CALLS` | `200` | Hard cap per skill invocation |
+| `GBS_MAX_NUDGES` | `3` | Max "you're looping — summarize" nudges before a stuck subagent is forced to wrap up |
 | `GBS_BASH_MAX_TIMEOUT_MS` | `3600000` | Max Bash timeout (1 hour) |
 | `GBS_SUBAGENT_TIMEOUT_SEC` | `86400` | (unused since subagents run in-process) |
 
@@ -78,3 +83,6 @@ pytest tests/test_step_parity.py
 # End-to-end (clean run + validation, ~4h)
 pytest tests/test_e2e.py
 ```
+
+The parity tests compare each step's outputs against `tests/reference/step_N.json`.
+Regenerate those fixtures from a known-good run with `./gbs test capture-reference`.

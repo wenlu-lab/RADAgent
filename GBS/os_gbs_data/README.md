@@ -33,7 +33,7 @@ tested against:
 | Model | `Qwen/Qwen3-Coder-30B-A3B-Instruct` (bf16, ~60 GB in VRAM) — see note on the FP8 variant below |
 | Inference | **in-process** Hugging Face `transformers` (no server); tool calls parsed by `gbs/qwen3_coder_parser.py` |
 | Python | 3.11, in a project-local `.venv/` |
-| Pinned deps | `torch>=2.1` (cu118 wheels), `transformers>=4.55`, `accelerate`, `compressed-tensors` |
+| Pinned deps | `torch==2.7.1` (cu118 wheels), `transformers==4.55.4`, `accelerate`, `huggingface_hub`, `textual`/`rich` (viewer) |
 | Runtime | the `gbs-agent` package in `agent/`, invoked via the `./gbs` CLI |
 | GPU | 1× NVIDIA A100 80GB / H100 80GB (≥75 GB VRAM) |
 
@@ -99,7 +99,7 @@ Fresh-server setup is ~45–60 min, dominated by the model download.
 
 ```bash
 nvidia-smi                      # need ≥75 GB VRAM total (A100 80GB / H100 80GB)
-df -h ~                         # need ≥50 GB free disk for the model cache
+df -h ~                         # need ≥65 GB free disk for the model cache (bf16 weights ~60 GB)
 free -h                         # need ≥32 GB RAM
 nvidia-smi | grep "Driver Ver"  # need a driver supporting CUDA 11.8+ (driver ≥ 470)
 ```
@@ -154,9 +154,9 @@ bash setup.sh
 ```
 
 `setup.sh` is idempotent and will: verify hardware/driver/Python, warn about any missing
-bioinformatics tools, create `.venv/` with the pinned `torch`/`transformers`/`accelerate`/
-`compressed-tensors` and install the agent (`pip install -e ./agent`), then pre-download
-the ~30 GB model.
+bioinformatics tools, create `.venv/` with the pinned `torch` + `transformers==4.55.4`,
+install the agent (`pip install -e ./agent`, which pulls `accelerate`/`huggingface_hub`/
+`textual`/`rich`), then pre-download the ~60 GB bf16 model.
 
 <details>
 <summary>Manual Python install (if you'd rather not use setup.sh)</summary>
@@ -167,7 +167,9 @@ python3.11 -m venv .venv
 # torch — cu118 wheels are forward-compatible with any driver ≥ 470:
 .venv/bin/pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
     --index-url https://download.pytorch.org/whl/cu118
-.venv/bin/pip install -e ./agent   # pulls transformers, accelerate, huggingface_hub
+# pin transformers to the validated release first, so pip won't pull an untested 5.x:
+.venv/bin/pip install "transformers==4.55.4"
+.venv/bin/pip install -e ./agent   # pulls accelerate, huggingface_hub, textual, rich
 .venv/bin/huggingface-cli download Qwen/Qwen3-Coder-30B-A3B-Instruct
 ```
 </details>
@@ -367,6 +369,12 @@ bash clean_pipeline.sh 5-10       # clean steps 5 through 10
 bash clean_pipeline.sh indexes    # clean BWA + BLAST indexes (expensive to rebuild)
 ```
 
+**Resetting the Python env** (separate from pipeline data — wipes `.venv/` + caches):
+
+```bash
+bash clean_env.sh                 # then re-run `bash setup.sh` to rebuild
+```
+
 ---
 
 ## Error handling (4 layers)
@@ -459,5 +467,6 @@ os_gbs_data/
 ├── docs/superpowers/    # design specs + implementation plans
 ├── setup.sh             # one-shot venv + model installer
 ├── clean_pipeline.sh    # remove pipeline outputs by step
+├── clean_env.sh         # wipe .venv/ + Python caches for a clean reinstall
 └── gbs                  # the ./gbs CLI entry point
 ```

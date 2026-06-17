@@ -4,13 +4,13 @@
 # Run this from the project root after `git clone`. It will:
 #   1. Verify hardware/driver/Python prerequisites
 #   2. Verify bioinformatics CLI tools are on PATH (warns if missing)
-#   3. Create .venv/ with torch + the agent (transformers/accelerate/compressed-tensors)
+#   3. Create .venv/ with torch + the agent (transformers/accelerate/huggingface_hub)
 #   4. Pre-download the Qwen3-Coder-30B-A3B-Instruct model (bf16, ~60 GB)
 #   5. Print next steps
 #
 # Idempotent: re-running skips work that's already done.
 # Does NOT install bioinformatics tools (they need sudo and are OS-specific —
-# see SETUP-OS.md section 2 for those).
+# see the README's Installation section 2 for those).
 
 set -euo pipefail
 
@@ -32,7 +32,7 @@ command -v nvidia-smi >/dev/null 2>&1 || die "nvidia-smi not found — no NVIDIA
 
 GPU_FREE_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | tr -d ' ')
 if [ "${GPU_FREE_MB:-0}" -lt 70000 ]; then
-    red "GPU has only ${GPU_FREE_MB} MB total — Qwen3-Coder-30B-A3B FP8 needs ≥75 GB."
+    red "GPU has only ${GPU_FREE_MB} MB total — Qwen3-Coder-30B-A3B bf16 needs ≥75 GB."
     die "Use a different model variant or hardware."
 fi
 green "GPU OK: ${GPU_FREE_MB} MB total"
@@ -82,7 +82,7 @@ fi
 if [ ${#MISSING[@]} -gt 0 ]; then
     yellow ""
     yellow "Missing tools: ${MISSING[*]}"
-    yellow "Install them per SETUP-OS.md section 2 before running the pipeline."
+    yellow "Install them per the README's Installation section 2 before running the pipeline."
     yellow "Continuing anyway — the agent install does NOT need these tools."
 fi
 
@@ -121,7 +121,7 @@ print(f'  torch {torch.__version__}, CUDA available, device={torch.cuda.get_devi
 .venv/bin/pip install --quiet "transformers==4.55.4"
 green "transformers pinned to 4.55.4"
 
-# Agent itself — pulls accelerate, compressed-tensors, huggingface_hub, etc. per pyproject
+# Agent itself — pulls accelerate, huggingface_hub, textual, rich, etc. per pyproject
 .venv/bin/pip install --quiet -e ./agent
 green "agent installed (editable)"
 
@@ -163,7 +163,7 @@ cat <<EOF
 
 Setup is done. Next steps:
 
-1. Add YOUR data (see SETUP-OS.md section 4):
+1. Add YOUR data (see the README's Installation section 4):
    - Paired FASTQs:    cp /path/*.fastq.gz 02-raw/
    - Reference genome: cp /path/genome.fasta 08-genome/genome.fasta
                        bwa index 08-genome/genome.fasta
@@ -181,7 +181,7 @@ Setup is done. Next steps:
    ls -la final_snp_panel.vcf
    grep -cv '^#' final_snp_panel.vcf
 
-For troubleshooting see SETUP-OS.md section "Troubleshooting".
+For troubleshooting see the README's "Troubleshooting" section.
 
 EOF
 
