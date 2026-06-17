@@ -1,7 +1,7 @@
 # Open-Source Pipeline Setup Guide
 
 > **⚠️ Superseded by [`README.md`](README.md).** The stack no longer uses a vLLM server —
-> the agent loads `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` **in-process** via Hugging Face
+> the agent loads `Qwen/Qwen3-Coder-30B-A3B-Instruct` (bf16) **in-process** via Hugging Face
 > `transformers`. There is no server to start and no `./gbs serve`. Follow `README.md` for
 > authoritative, up-to-date steps; the notes below are kept for reference and lightly
 > corrected.
@@ -24,7 +24,7 @@ free -h                         # need ≥32 GB RAM
 nvidia-smi | grep "Driver Ver"  # need driver supporting CUDA 11.8+ (driver ≥ 470)
 ```
 
-If your card has less than 75 GB VRAM, the Qwen3-Coder-30B-A3B-Instruct-FP8 model will not fit. Use a smaller model variant or a multi-GPU setup (not covered here).
+If your card has less than 75 GB VRAM, the bf16 Qwen3-Coder-30B-A3B-Instruct model will not fit. Use a smaller model variant or a multi-GPU setup (not covered here).
 
 ---
 
@@ -137,7 +137,7 @@ Expected output:
 ```
 Project root: /path/to/os_gbs_data
 Skills dir:   /path/to/os_gbs_data/.claude/skills
-Model id:     Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
+Model id:     Qwen/Qwen3-Coder-30B-A3B-Instruct
 Torch dtype:  auto
 Device map:   auto
 Max ctx tok:  32768
@@ -222,7 +222,7 @@ python3.11 -m venv .venv
 .venv/bin/pip install -e ./agent
 
 # Pre-download the model (~30 GB):
-.venv/bin/huggingface-cli download Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
+.venv/bin/huggingface-cli download Qwen/Qwen3-Coder-30B-A3B-Instruct
 ```
 
 ---

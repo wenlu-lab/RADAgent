@@ -45,7 +45,9 @@ class Config:
             skills_dir=root / ".claude" / "skills",
             transcripts_dir=root / ".gbs" / "transcripts",
             runtime_log=root / ".gbs" / "runtime.log",
-            model_id=os.environ.get("GBS_MODEL_ID", "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"),
+            # bf16 checkpoint: loads on Ampere (A100, compute 8.0). The -FP8 variant
+            # needs compute >= 8.9 (Ada/Hopper) in transformers; override via GBS_MODEL_ID there.
+            model_id=os.environ.get("GBS_MODEL_ID", "Qwen/Qwen3-Coder-30B-A3B-Instruct"),
             torch_dtype=os.environ.get("GBS_TORCH_DTYPE", "auto"),
             device_map=os.environ.get("GBS_DEVICE_MAP", "auto"),
             max_context_tokens=int(os.environ.get("GBS_MAX_CONTEXT_TOKENS", "32768")),

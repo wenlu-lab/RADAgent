@@ -57,7 +57,7 @@ See the project root README's "Installation" section. The model loads in-process
 | Variable | Default | Purpose |
 |---|---|---|
 | `GBS_PROJECT_ROOT` | (auto-detect) | Project root containing `.claude/skills/` |
-| `GBS_MODEL_ID` | `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` | HF model id loaded in-process |
+| `GBS_MODEL_ID` | `Qwen/Qwen3-Coder-30B-A3B-Instruct` | HF model id loaded in-process (bf16; `-FP8` needs compute ≥8.9) |
 | `GBS_TORCH_DTYPE` | `auto` | dtype for `from_pretrained` (e.g. `bfloat16`) |
 | `GBS_DEVICE_MAP` | `auto` | `device_map` for `from_pretrained` |
 | `GBS_MAX_CONTEXT_TOKENS` | `32768` | Effective context window (drives message trimming) |

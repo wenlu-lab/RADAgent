@@ -5,7 +5,7 @@
 #   1. Verify hardware/driver/Python prerequisites
 #   2. Verify bioinformatics CLI tools are on PATH (warns if missing)
 #   3. Create .venv/ with torch + the agent (transformers/accelerate/compressed-tensors)
-#   4. Pre-download the Qwen3-Coder-30B-A3B-Instruct-FP8 model (~30 GB)
+#   4. Pre-download the Qwen3-Coder-30B-A3B-Instruct model (bf16, ~60 GB)
 #   5. Print next steps
 #
 # Idempotent: re-running skips work that's already done.
@@ -45,8 +45,8 @@ fi
 green "Driver OK: $DRIVER"
 
 DISK_FREE_GB=$(df -BG "$HOME" | awk 'NR==2 {print $4}' | tr -d 'G')
-if [ "${DISK_FREE_GB:-0}" -lt 50 ]; then
-    yellow "WARNING: only ${DISK_FREE_GB} GB free in \$HOME — model needs ~30 GB."
+if [ "${DISK_FREE_GB:-0}" -lt 65 ]; then
+    yellow "WARNING: only ${DISK_FREE_GB} GB free in \$HOME — bf16 model needs ~60 GB."
 fi
 
 PYTHON=python3.11
@@ -116,14 +116,14 @@ assert torch.cuda.is_available(), 'torch.cuda.is_available() == False — driver
 print(f'  torch {torch.__version__}, CUDA available, device={torch.cuda.get_device_name(0)}')
 "
 
-# Agent itself — pulls transformers, accelerate, compressed-tensors per pyproject
-.venv/bin/pip install --quiet -e ./agent
-green "agent installed (editable)"
-
-# Pin transformers to the validated 4.55.4 for in-process Qwen3-Coder. transformers
-# 5.x is untested against this stack; pin for reproducibility on fresh installs.
+# Pin transformers to the validated 4.55.4 BEFORE the agent install, so the agent's
+# `transformers>=4.55` is already satisfied and pip won't pull an untested 5.x.
 .venv/bin/pip install --quiet "transformers==4.55.4"
 green "transformers pinned to 4.55.4"
+
+# Agent itself — pulls accelerate, compressed-tensors, huggingface_hub, etc. per pyproject
+.venv/bin/pip install --quiet -e ./agent
+green "agent installed (editable)"
 
 # Test deps (so the parity tests can run later)
 .venv/bin/pip install --quiet "pytest>=8.0" "pytest-mock>=3.12" "pytest-timeout>=2.3"
@@ -142,16 +142,17 @@ else
 fi
 
 # ---------- 4. model download ----------
-section "4. Pre-download Qwen3-Coder-30B-A3B-Instruct-FP8 (~30 GB)"
+section "4. Pre-download Qwen3-Coder-30B-A3B-Instruct (bf16, ~60 GB)"
 
-MODEL_DIR="$HOME/.cache/huggingface/hub/models--Qwen--Qwen3-Coder-30B-A3B-Instruct-FP8"
+# bf16 checkpoint: loads on Ampere (A100). The -FP8 variant needs compute >= 8.9.
+MODEL_DIR="$HOME/.cache/huggingface/hub/models--Qwen--Qwen3-Coder-30B-A3B-Instruct"
 if [ -d "$MODEL_DIR" ] && [ "$(du -sh "$MODEL_DIR" 2>/dev/null | cut -f1)" != "0" ]; then
     SIZE=$(du -sh "$MODEL_DIR" | cut -f1)
     yellow "Model cache exists at $MODEL_DIR ($SIZE)"
     yellow "Skipping download. Delete the directory if you want to re-download."
 else
-    yellow "Downloading model — this takes 15-30 min depending on bandwidth..."
-    .venv/bin/huggingface-cli download Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
+    yellow "Downloading model — this takes ~30-60 min depending on bandwidth..."
+    .venv/bin/huggingface-cli download Qwen/Qwen3-Coder-30B-A3B-Instruct
     green "Model downloaded"
 fi
 

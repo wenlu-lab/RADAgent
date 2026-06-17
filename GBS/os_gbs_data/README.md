@@ -30,13 +30,18 @@ tested against:
 
 | Component | Value |
 |---|---|
-| Model | `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` (FP8 weights → bf16 in VRAM, ~60 GB) |
+| Model | `Qwen/Qwen3-Coder-30B-A3B-Instruct` (bf16, ~60 GB in VRAM) — see note on the FP8 variant below |
 | Inference | **in-process** Hugging Face `transformers` (no server); tool calls parsed by `gbs/qwen3_coder_parser.py` |
 | Python | 3.11, in a project-local `.venv/` |
 | Pinned deps | `torch>=2.1` (cu118 wheels), `transformers>=4.55`, `accelerate`, `compressed-tensors` |
 | Runtime | the `gbs-agent` package in `agent/`, invoked via the `./gbs` CLI |
 | GPU | 1× NVIDIA A100 80GB / H100 80GB (≥75 GB VRAM) |
 
+> **Why bf16, not FP8:** transformers' FP8 quantizer requires GPU compute capability
+> ≥ 8.9 (Ada/Hopper). The A100 is 8.0 (Ampere), so the `-FP8` checkpoint won't load
+> in-process there — use the bf16 checkpoint (default). On a 4090/H100 you can set
+> `GBS_MODEL_ID=Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8`.
+>
 > **Effective context window:** in-process `transformers` has no PagedAttention, so the
 > usable window is much smaller than vLLM's 262K (default `GBS_MAX_CONTEXT_TOKENS=32768`,
 > tune to your GPU). Long agentic loops also re-encode the prompt each turn, so a run is
@@ -99,7 +104,7 @@ free -h                         # need ≥32 GB RAM
 nvidia-smi | grep "Driver Ver"  # need a driver supporting CUDA 11.8+ (driver ≥ 470)
 ```
 
-If the card has < 75 GB VRAM, the FP8 30B model won't fit — use a smaller variant or
+If the card has < 75 GB VRAM, the bf16 30B model won't fit — use a smaller variant or
 multi-GPU (not covered here).
 
 ### 2. System + bioinformatics tools
@@ -162,8 +167,8 @@ python3.11 -m venv .venv
 # torch — cu118 wheels are forward-compatible with any driver ≥ 470:
 .venv/bin/pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
     --index-url https://download.pytorch.org/whl/cu118
-.venv/bin/pip install -e ./agent   # pulls transformers, accelerate, compressed-tensors
-.venv/bin/huggingface-cli download Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
+.venv/bin/pip install -e ./agent   # pulls transformers, accelerate, huggingface_hub
+.venv/bin/huggingface-cli download Qwen/Qwen3-Coder-30B-A3B-Instruct
 ```
 </details>
 
@@ -212,7 +217,7 @@ Expected `./gbs status`:
 ```
 Project root: /path/to/os_gbs_data
 Skills dir:   /path/to/os_gbs_data/.claude/skills
-Model id:     Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
+Model id:     Qwen/Qwen3-Coder-30B-A3B-Instruct
 Torch dtype:  auto
 Device map:   auto
 Max ctx tok:  32768
@@ -427,7 +432,7 @@ pytest tests/test_e2e.py           # full clean run + validate final_snp_panel.v
 | First run pauses minutes before any output | The ~60 GB model is loading into VRAM (one-time per process) | Normal — watch `nvidia-smi`; it stays resident after |
 | `RuntimeError: NVIDIA driver too old` | torch built for newer CUDA than the driver | Use the cu118 torch wheels (Installation §3) |
 | CUDA out of memory during a long step | Context too large for in-process KV cache (no PagedAttention) | Lower `GBS_MAX_CONTEXT_TOKENS` (e.g. `export GBS_MAX_CONTEXT_TOKENS=24576`) and re-run |
-| Model fails to load / FP8 kernel error on Ampere | FP8 weights need dequant to bf16 | Ensure `compressed-tensors` is installed, or set `GBS_MODEL_ID=Qwen/Qwen3-Coder-30B-A3B-Instruct` (bf16 checkpoint) |
+| `FP8 quantized models is only supported on ... compute capability >= 8.9` | You pointed `GBS_MODEL_ID` at the `-FP8` checkpoint on an Ampere GPU (A100 = 8.0) | Use the default bf16 checkpoint (`Qwen/Qwen3-Coder-30B-A3B-Instruct`); FP8 only loads on 4090/H100 |
 | `./gbs status` shows little GPU free before a run | Another process is holding VRAM | Free the card; the model needs ~60 GB contiguous |
 | A step reports FAILURE but output files exist | The model judged its own work poorly | Check the files; resume with `./gbs orchestrator <next-step>` |
 | Log shows fake timestamps like "2023-05-15…" | Model copied a SKILL.md template literally | The real timestamps are in `gbs-pipeline.log` / the `.gbs` transcripts |
