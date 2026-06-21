@@ -1,0 +1,5 @@
+{
+  "blast_filtered_vcf_exists": true,
+  "blast_input_seq_count": 12,
+  "blast_kept_count": 10
+}

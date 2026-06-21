@@ -1,0 +1,11 @@
+{
+  "chromosomes_covered": 44,
+  "final_vcf_exists": true,
+  "position_set_md5": "761778dea0fbdfed3836b627c67b40b3",
+  "snp_count": 122,
+  "snps_per_chrom": {
+    "per_chrom_min": 1,
+    "per_chrom_max": 50
+  },
+  "summary_file_exists": true
+}

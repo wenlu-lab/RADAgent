@@ -1,0 +1,42 @@
+# Ignore all data files in os_gbs_data/, keep only code/config files.
+# Patterns here are relative to this directory.
+
+# Ignore everything by default...
+*
+
+# ...but always keep this gitignore and let git recurse into subdirs
+!.gitignore
+!*/
+
+# Keep code and config files anywhere below this directory
+!*.sh
+!*.py
+!*.R
+!*.r
+!*.md
+!*.yml
+!*.yaml
+!*.json
+!*.toml
+!*.pl
+!README*
+
+# info files
+!01-info_files/sample_information.csv
+!01-info_files/adapters.fasta
+
+# CLI entry point (extensionless bash script)
+!/gbs
+
+# For empty directories
+!**/.gitkeep
+
+# for virtual environments
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Documentation
+/docs/
