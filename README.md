@@ -1,5 +1,5 @@
-# LLM4ScientificPipelines
-LLM for Automating GBS pipelines
+# Agentic Scientific Pipelines
+LLM for automating GBS pipelines
 
 ## Open source agent
 
