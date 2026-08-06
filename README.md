@@ -1,5 +1,5 @@
 # Agentic Scientific Pipelines
-LLM for automating GBS pipelines
+LLM for automating RADseq pipelines
 
 ## Open source agent
 
