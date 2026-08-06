@@ -1,1 +1,1 @@
-# Genotyping-by-Sequencing(GBS) 
+# RADseq
