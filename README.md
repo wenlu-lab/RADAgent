@@ -4,6 +4,6 @@ LLM for automating RADseq pipelines
 ## Open source agent
 
 ```
-GBS/os_gbs_data/
+RAD/os_rad_data/
 ```
 
