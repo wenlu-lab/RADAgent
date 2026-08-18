@@ -59,8 +59,8 @@ Resolve any `MISS` before continuing.
 ### 3. Python venv + model (automated)
 
 ```bash
-git clone <your-repo-url> os_gbs_data
-cd os_gbs_data
+git clone <your-repo-url> os_rad_data
+cd os_rad_data
 bash setup.sh
 ```
 
@@ -85,7 +85,7 @@ python3.11 -m venv .venv
 ```
 </details>
 
-The `./gbs` wrapper calls the venv binaries directly — you never need to
+The `./rad` wrapper calls the venv binaries directly — you never need to
 `source .venv/bin/activate`.
 
 ### 4. Add your data
@@ -125,11 +125,11 @@ There is no server to start — the model loads in-process on the first agent ca
 ./gbs status
 ```
 
-Expected `./gbs status`:
+Expected `./rad status`:
 
 ```
-Project root: /path/to/os_gbs_data
-Skills dir:   /path/to/os_gbs_data/.claude/skills
+Project root: /path/to/os_rad_data
+Skills dir:   /path/to/os_rad_data/.claude/skills
 Model id:     Qwen/Qwen3-Coder-30B-A3B-Instruct
 Torch dtype:  auto
 Device map:   auto
@@ -145,13 +145,124 @@ orchestrator (or `./gbs run`). Make sure no other process is holding VRAM.
 ## 🚀 Quick Start
 
 ```bash
-./gbs status           # sanity check — prints model id + GPU free
+./rad status           # sanity check — prints model id + GPU free
 
 # run the full pipeline in the background, logging to .gbs/ (gives the viewer a session log)
 # the model loads in-process on the first call (a few minutes), then stays resident
 nohup ./gbs orchestrator > .gbs/orchestrator-$(date +%Y%m%d-%H%M%S).log 2>&1 &
 
-./gbs view             # watch it live in the TUI
+./rad view             # watch it live in the TUI
+```
+
+---
+
+Running the pipeline
+
+```bash
+# Full pipeline (16 steps), in the background, logging to .rad/ so the viewer sees the run:
+nohup ./rad orchestrator > .gbs/orchestrator-$(date +%Y%m%d-%H%M%S).log 2>&1 &
+echo "PID: $!"
+```
+
+**Monitor** (in another terminal) — the richest option is the TUI (`./gbs view`); for a
+plain tail:
+
+```bash
+tail -F rad-pipeline.log        # real per-step log with timestamps + status
+pgrep -af rad-agent             # confirm the agent process is alive
+```
+
+**When it finishes:**
+
+```bash
+grep -cv '^#' final_snp_panel.vcf    # SNP count (typical: 100–300)
+head final_snp_panel_summary.txt     # per-chromosome summary
+cat rad-pipeline-timing.csv          # per-step duration + token usage
+```
+
+---
+
+## 💻 Viewing runs (`./rad view`)
+
+A live, keyboard-driven terminal UI for browsing pipeline runs recorded under `.gbs/` —
+both **while a run is in progress** and **after it finishes**. It replaces the old
+`browse_transcripts.py` script.
+
+```bash
+./rad view                 # open the live run if one is active, else the most recent
+./rad view e24cd335        # open a specific run by session-id prefix
+./rad view --no-live       # static mode (no background polling)
+```
+
+### Keys
+
+| Key | Action |
+|---|---|
+| `↑` `↓` | Move within the focused list (the view updates as you move) |
+| `Tab` / `Shift+Tab` | Switch focus between the Runs / Steps / Detail panes |
+| `c` | **Commands-only** — show just the `$ command` lines |
+| `e` | **Errors-only** — show only commands/results that failed (`[exit N]`, timeouts) |
+| `/` | **Search** within the detail pane (Enter applies, `Esc` clears) |
+| `o` | Jump to the **Orchestrator lane** — what the controller did to launch/verify/retry steps |
+| `l` | Toggle **live-follow** (auto-refresh + tail the active step) |
+| `r` | Refresh from disk now |
+| `q` | Quit |
+
+`c` and `e` are mutually exclusive (turning one on turns the other off — the status bar
+shows it). Moving the cursor manually turns live-follow off so a refresh won't yank you
+away; press `l` to re-engage.
+
+---
+
+## 🧩 Pipeline steps
+
+| Step | Skill | Description | Est. time |
+|------|-------|-------------|-----------|
+| 0 | `rad-0-lane-info` | Parse FASTQs to generate the lane-info list | 5s |
+| 1 | `rad-1-cutadapt` | Trim Illumina adapters (parallel) | ~10min |
+| 2 | `rad-2-radtags` | Enzyme filtering with `process_radtags` (parallel) | ~30min |
+| 3 | `rad-3-rename` | Rename per-lane outputs to per-sample names | 10s |
+| 4 | `rad-4-popmap` | Generate the population map from the sample CSV | 1s |
+| 5 | `rad-5-bwa` | Align to the reference with BWA-MEM (parallel) | ~1-2hr |
+| 6 | `rad-6-gstacks` | Reference-based genotyping | ~30-60min |
+| 7 | `rad-7-populations` | Population-level filtering and export | ~10-30min |
+| 8 | `rad-8-vcf-filter` | VCF filtering + chromosome selection | ~1min |
+| 9 | `rad-9-snp-dup-hwe` | SNP duplication detection + HWE filtering | ~2min |
+| 10 | `rad-10-ld-clump` | Linkage-disequilibrium pruning (`bigsnpr`) | ~5min |
+| 11 | `rad-11-remove-atgc` | Remove strand-ambiguous A/T and G/C SNPs | 5s |
+| 12 | `rad-12-maf-filter` | Minor-allele-frequency filter (MAF ≥ 0.1) | 5s |
+| 13 | `rad-13-flanking` | Remove SNPs in complex/duplicated regions | 10s |
+| 14 | `rad-14-blast-map` | BLAST validation of SNP uniqueness | ~2min |
+| 15 | `rad-15-even-dist` | Select the final panel with even chromosome coverage | 5s |
+
+---
+
+## ⚙️ `./rad` command reference
+
+```bash
+./rad status                      # environment + model/GPU info + recent sessions
+./rad view [session] [--no-live]  # browse runs in the TUI
+./rad orchestrator                # run the full pipeline (steps 0-15)
+./rad orchestrator 5              # resume from step 5
+./rad orchestrator 8 --only       # run only step 8
+./rad orchestrator 8 --only --clean   # clean step 8 outputs first, then run it
+./rad run gbs-5-bwa               # run one skill standalone (no orchestrator)
+./rad debugger 9 "vcftools error" # manually invoke the autonomous debugger on a step
+```
+
+**Cleaning outputs:**
+
+```bash
+bash clean_pipeline.sh all        # wipe ALL pipeline outputs (keeps raw data)
+bash clean_pipeline.sh 5          # clean only step 5
+bash clean_pipeline.sh 5-10       # clean steps 5 through 10
+bash clean_pipeline.sh indexes    # clean BWA + BLAST indexes (expensive to rebuild)
+```
+
+**Resetting the Python env** (separate from pipeline data — wipes `.venv/` + caches):
+
+```bash
+bash clean_env.sh                 # then re-run `bash setup.sh` to rebuild
 ```
 
 ---
