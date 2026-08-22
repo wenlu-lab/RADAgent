@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Thin shell wrapper around `python -m rad.cli`.
+# Sets RAD_PROJECT_ROOT to the directory of this script so the agent
+# always resolves the right project regardless of cwd.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export RAD_PROJECT_ROOT="$SCRIPT_DIR"
+PY="${SCRIPT_DIR}/.venv/bin/python"
+[ -x "$PY" ] || { echo "venv Python not found at $PY — run venv setup first" >&2; exit 1; }
+exec "$PY" -m rad.cli "$@"

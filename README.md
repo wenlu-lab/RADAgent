@@ -9,13 +9,13 @@ Fresh-server setup is ~45–60 min, dominated by the model download.
 ### 1. Hardware check
 
 ```bash
-nvidia-smi                      # need ≥75 GB VRAM total (A100 80GB / H100 80GB)
-df -h ~                         # need ≥65 GB free disk for the model cache (bf16 weights ~60 GB)
+nvidia-smi                      # need ≥30 GB VRAM total (e.g. A100 40GB/80GB)
+df -h ~                         # need ≥30 GB free disk for the model cache (bf16 weights ~28 GB)
 free -h                         # need ≥32 GB RAM
 nvidia-smi | grep "Driver Ver"  # need a driver supporting CUDA 11.8+ (driver ≥ 470)
 ```
 
-If the card has < 75 GB VRAM, the bf16 30B model won't fit — use a smaller variant or
+If the card has < 30 GB VRAM, the bf16 model won't fit — use a smaller variant or
 multi-GPU (not covered here).
 
 ### 2. System + bioinformatics tools
@@ -67,7 +67,7 @@ bash setup.sh
 `setup.sh` is idempotent and will: verify hardware/driver/Python, warn about any missing
 bioinformatics tools, create `.venv/` with the pinned `torch` + `transformers==4.55.4`,
 install the agent (`pip install -e ./agent`, which pulls `accelerate`/`huggingface_hub`/
-`textual`/`rich`), then pre-download the ~60 GB bf16 model.
+`textual`/`rich`), then pre-download the ~28 GB bf16 model.
 
 <details>
 <summary>Manual Python install (if you'd rather not use setup.sh)</summary>
@@ -81,7 +81,7 @@ python3.11 -m venv .venv
 # pin transformers to the validated release first, so pip won't pull an untested 5.x:
 .venv/bin/pip install "transformers==4.55.4"
 .venv/bin/pip install -e ./agent   # pulls accelerate, huggingface_hub, textual, rich
-.venv/bin/huggingface-cli download Qwen/Qwen3-Coder-30B-A3B-Instruct
+.venv/bin/huggingface-cli download microsoft/Phi-4
 ```
 </details>
 
@@ -122,7 +122,7 @@ SRR30282940,CTCACT,P01,ROW-05-22,1,A02,,DO NOT modify the column titles in the h
 There is no server to start — the model loads in-process on the first agent call.
 
 ```bash
-./gbs status
+./rad status
 ```
 
 Expected `./rad status`:
@@ -130,15 +130,15 @@ Expected `./rad status`:
 ```
 Project root: /path/to/os_rad_data
 Skills dir:   /path/to/os_rad_data/.claude/skills
-Model id:     Qwen/Qwen3-Coder-30B-A3B-Instruct
+Model id:     microsoft/Phi-4
 Torch dtype:  auto
 Device map:   auto
 Max ctx tok:  32768
 GPU free MB:  80000      ← the card should be ~empty before the first run
 ```
 
-The GPU should be nearly empty here; the ~60 GB load happens when you launch the
-orchestrator (or `./gbs run`). Make sure no other process is holding VRAM.
+The GPU should be nearly empty here; the ~28 GB load happens when you launch the
+orchestrator (or `./rad run`). Make sure no other process is holding VRAM.
 
 ---
 
@@ -147,9 +147,9 @@ orchestrator (or `./gbs run`). Make sure no other process is holding VRAM.
 ```bash
 ./rad status           # sanity check — prints model id + GPU free
 
-# run the full pipeline in the background, logging to .gbs/ (gives the viewer a session log)
+# run the full pipeline in the background, logging to .rad/ (gives the viewer a session log)
 # the model loads in-process on the first call (a few minutes), then stays resident
-nohup ./gbs orchestrator > .gbs/orchestrator-$(date +%Y%m%d-%H%M%S).log 2>&1 &
+nohup ./rad orchestrator > .rad/orchestrator-$(date +%Y%m%d-%H%M%S).log 2>&1 &
 
 ./rad view             # watch it live in the TUI
 ```
@@ -160,11 +160,11 @@ Running the pipeline
 
 ```bash
 # Full pipeline (16 steps), in the background, logging to .rad/ so the viewer sees the run:
-nohup ./rad orchestrator > .gbs/orchestrator-$(date +%Y%m%d-%H%M%S).log 2>&1 &
+nohup ./rad orchestrator > .rad/orchestrator-$(date +%Y%m%d-%H%M%S).log 2>&1 &
 echo "PID: $!"
 ```
 
-**Monitor** (in another terminal) — the richest option is the TUI (`./gbs view`); for a
+**Monitor** (in another terminal) — the richest option is the TUI (`./rad view`); for a
 plain tail:
 
 ```bash
@@ -184,7 +184,7 @@ cat rad-pipeline-timing.csv          # per-step duration + token usage
 
 ## 💻 Viewing runs (`./rad view`)
 
-A live, keyboard-driven terminal UI for browsing pipeline runs recorded under `.gbs/` —
+A live, keyboard-driven terminal UI for browsing pipeline runs recorded under `.rad/` —
 both **while a run is in progress** and **after it finishes**. It replaces the old
 `browse_transcripts.py` script.
 
@@ -246,7 +246,7 @@ away; press `l` to re-engage.
 ./rad orchestrator 5              # resume from step 5
 ./rad orchestrator 8 --only       # run only step 8
 ./rad orchestrator 8 --only --clean   # clean step 8 outputs first, then run it
-./rad run gbs-5-bwa               # run one skill standalone (no orchestrator)
+./rad run rad-5-bwa               # run one skill standalone (no orchestrator)
 ./rad debugger 9 "vcftools error" # manually invoke the autonomous debugger on a step
 ```
 
