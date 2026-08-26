@@ -4,6 +4,8 @@ RADAgent is an agentic framework for automating end-to-end restriction site-asso
 
 <p align="center">
   <img src="RAD.png" width="600">
+  <br>
+  <em>RAD Agent CLI</em>
 </p>
 
 ## 📦 Installation
