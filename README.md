@@ -2,6 +2,10 @@
 
 RADAgent is an agentic framework for automating end-to-end restriction site-associated DNA sequencing (RAD-seq) analysis with open-weight large language models.
 
+<p align="center">
+  <img src="RAD.png" width="600">
+</p>
+
 ## 📦 Installation
 
 Fresh-server setup is ~45–60 min, dominated by the model download.
