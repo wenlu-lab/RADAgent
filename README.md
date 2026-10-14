@@ -1,4 +1,4 @@
-# 🤖 Agentic Scientific Pipelines
+# 🤖 Local Agentic Pipelines for Restriction site-associated DNA sequencing (RAD-seq) 
 
 RADAgent is an agentic framework for automating end-to-end restriction site-associated DNA sequencing (RAD-seq) analysis with open-weight large language models.
 
